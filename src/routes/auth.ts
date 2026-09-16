@@ -6,13 +6,11 @@ const router = Router();
 /**
  * POST /api/auth/register
  * Body: { name, email, country, firebaseUid }
- * Called by signup.html right after createUserWithEmailAndPassword().
  */
 router.post("/register", async (req: Request, res: Response) => {
   try {
     const { name, email, country, firebaseUid } = req.body || {};
 
-    // ===== Validation =====
     if (!name || !email || !country || !firebaseUid) {
       return res.status(400).json({
         success: false,
@@ -22,13 +20,11 @@ router.post("/register", async (req: Request, res: Response) => {
 
     const normalizedEmail = String(email).toLowerCase().trim();
 
-    // ===== Already registered? =====
     const existing = await User.findOne({
       $or: [{ email: normalizedEmail }, { firebaseUid }],
     });
 
     if (existing) {
-      // If it's the same Firebase user retrying, treat as idempotent
       if (existing.firebaseUid === firebaseUid) {
         return res.status(200).json({
           success: true,
@@ -42,7 +38,6 @@ router.post("/register", async (req: Request, res: Response) => {
       });
     }
 
-    // ===== Create user =====
     const user = await User.create({
       name: String(name).trim(),
       email: normalizedEmail,
@@ -80,7 +75,6 @@ router.post("/register", async (req: Request, res: Response) => {
     });
   } catch (err: any) {
     console.error("Register error:", err);
-    // Duplicate key (unique email/firebaseUid index)
     if (err?.code === 11000) {
       return res.status(409).json({
         success: false,
@@ -97,8 +91,6 @@ router.post("/register", async (req: Request, res: Response) => {
 /**
  * POST /api/auth/login
  * Body: { firebaseUid }
- * Called after Firebase signInWithEmailAndPassword() succeeds.
- * Updates lastLogin and returns the MongoDB user document.
  */
 router.post("/login", async (req: Request, res: Response) => {
   try {
@@ -138,8 +130,6 @@ router.post("/login", async (req: Request, res: Response) => {
 
 /**
  * GET /api/auth/me?firebaseUid=...
- * Fetch the current user's data from MongoDB.
- * Use this from the frontend to poll balance / deposits / withdrawals.
  */
 router.get("/me", async (req: Request, res: Response) => {
   try {
@@ -171,7 +161,6 @@ router.get("/me", async (req: Request, res: Response) => {
 
 /**
  * GET /api/auth/test
- * Simple health check for the auth router.
  */
 router.get("/test", (_req: Request, res: Response) => {
   res.json({ message: "Auth route working!" });
