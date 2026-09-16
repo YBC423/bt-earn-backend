@@ -65,7 +65,6 @@ export interface IUser extends Document {
 
 const UserSchema = new Schema<IUser>(
   {
-    // ===== Identity =====
     name: { type: String, required: true, trim: true },
     email: {
       type: String,
@@ -83,10 +82,6 @@ const UserSchema = new Schema<IUser>(
       index: true,
     },
 
-    // NOTE: NO password field — Firebase Auth owns passwords.
-    // MongoDB never sees the user's password.
-
-    // ===== Money =====
     balance: { type: Number, default: 0 },
 
     wallets: {
@@ -96,7 +91,6 @@ const UserSchema = new Schema<IUser>(
       ngn: { type: Number, default: 0 },
     },
 
-    // ===== History / activity =====
     deposits: [
       {
         type: { type: String, default: "deposit" },
