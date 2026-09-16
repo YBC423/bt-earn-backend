@@ -1,37 +1,122 @@
-import express from "express";
+import express, { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
 import cors from "cors";
 import dotenv from "dotenv";
 import authRoutes from "./routes/auth";
-import adminRoutes from "./routes/admin";
+// import adminRoutes from "./routes/admin"; // Uncomment ONLY if ./routes/admin.ts exists
 
 dotenv.config();
 
 const app = express();
 
-// Professional CORS - only your website can talk to API
-app.use(cors({
-  origin: ["https://bt-earn.xyz", "https://www.bt-earn.xyz", "http://localhost:3000"],
-  credentials: true
-}));
+/* ============================================================
+ *  CORS - allow bt-earn.xyz + GitHub Pages + localhost
+ * ============================================================ */
+const allowedOrigins = [
+  "https://bt-earn.xyz",
+  "https://www.bt-earn.xyz",
+  "http://localhost:3000",
+  "http://localhost:5173",
+  "http://127.0.0.1:5500",
+];
 
-app.use(express.json());
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Allow requests with no origin (curl, Postman, mobile apps)
+      if (!origin) return callback(null, true);
 
-// Routes
+      // Exact match
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+
+      // Allow any *.github.io subdomain (GitHub Pages)
+      if (/^https:\/\/[a-z0-9-]+\.github\.io$/i.test(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error(`CORS blocked for origin: ${origin}`));
+    },
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true,
+  })
+);
+
+// Handle preflight requests for all routes
+app.options("*", cors());
+
+/* ============================================================
+ *  Body parsers
+ * ============================================================ */
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: true }));
+
+/* ============================================================
+ *  Routes
+ * ============================================================ */
 app.use("/api/auth", authRoutes);
-app.use("/api/admin", adminRoutes); // Your power control
+// app.use("/api/admin", adminRoutes); // Uncomment ONLY if the file exists
 
-app.get("/", (req, res) => {
-  res.json({ 
+/* ============================================================
+ *  Health checks
+ * ============================================================ */
+app.get("/", (_req: Request, res: Response) => {
+  res.json({
     status: "BT-Earn API is LIVE - Professional",
     version: "2.0 - MongoDB Enterprise",
-    time: new Date()
+    time: new Date(),
   });
 });
 
-// Connect MongoDB and Start
+app.get("/health", (_req: Request, res: Response) => {
+  res.json({
+    status: "ok",
+    db:
+      mongoose.connection.readyState === 1
+        ? "connected"
+        : "disconnected",
+    time: new Date(),
+  });
+});
+
+/* ============================================================
+ *  404 handler
+ * ============================================================ */
+app.use((_req: Request, res: Response) => {
+  res.status(404).json({ success: false, message: "Route not found" });
+});
+
+/* ============================================================
+ *  Global error handler
+ * ============================================================ */
+app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+  console.error("Unhandled error:", err);
+  res.status(err.status || 500).json({
+    success: false,
+    message: err.message || "Internal server error",
+  });
+});
+
+/* ============================================================
+ *  Connect to MongoDB and start server
+ * ============================================================ */
 const PORT = process.env.PORT || 5000;
-mongoose.connect(process.env.MONGO_URI as string).then(() => {
-  console.log("✅ MongoDB Atlas Connected - Professional");
-  app.listen(PORT, () => console.log(`🚀 API running on ${PORT}`));
-}).catch(err => console.error("MongoDB Error:", err));
+const MONGO_URI = process.env.MONGO_URI;
+
+if (!MONGO_URI) {
+  console.error("MONGO_URI is not set in environment variables");
+  process.exit(1);
+}
+
+mongoose
+  .connect(MONGO_URI)
+  .then(() => {
+    console.log("MongoDB Atlas Connected - Professional");
+    app.listen(PORT, () => console.log(`API running on port ${PORT}`));
+  })
+  .catch((err) => {
+    console.error("MongoDB connection error:", err);
+    process.exit(1);
+  });
+
+export default app;
