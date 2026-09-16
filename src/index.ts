@@ -23,17 +23,11 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (curl, Postman, mobile apps)
       if (!origin) return callback(null, true);
-
-      // Exact match
       if (allowedOrigins.includes(origin)) return callback(null, true);
-
-      // Allow any *.github.io subdomain (GitHub Pages)
       if (/^https:\/\/[a-z0-9-]+\.github\.io$/i.test(origin)) {
         return callback(null, true);
       }
-
       return callback(new Error(`CORS blocked for origin: ${origin}`));
     },
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
@@ -42,7 +36,6 @@ app.use(
   })
 );
 
-// Handle preflight requests for all routes
 app.options("*", cors());
 
 /* ============================================================
