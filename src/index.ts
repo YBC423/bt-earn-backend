@@ -1,30 +1,37 @@
 import express from "express";
 import mongoose from "mongoose";
-import dotenv from "dotenv";
 import cors from "cors";
+import dotenv from "dotenv";
 import authRoutes from "./routes/auth";
+import adminRoutes from "./routes/admin";
 
 dotenv.config();
 
 const app = express();
-app.use(express.json());
+
+// Professional CORS - only your website can talk to API
 app.use(cors({
   origin: ["https://bt-earn.xyz", "https://www.bt-earn.xyz", "http://localhost:3000"],
   credentials: true
 }));
 
-const PORT = process.env.PORT || 5000;
+app.use(express.json());
 
-mongoose.connect(process.env.MONGO_URI as string)
-  .then(() => console.log("MongoDB connected"))
-  .catch((err) => console.log(err));
+// Routes
+app.use("/api/auth", authRoutes);
+app.use("/api/admin", adminRoutes); // Your power control
 
 app.get("/", (req, res) => {
-  res.send("BT-Earn Backend is Live!");
+  res.json({ 
+    status: "BT-Earn API is LIVE - Professional",
+    version: "2.0 - MongoDB Enterprise",
+    time: new Date()
+  });
 });
 
-app.use("/api/auth", authRoutes);
-
-app.listen(PORT, () => {
-  console.log(`server running on port ${PORT}`);
-});
+// Connect MongoDB and Start
+const PORT = process.env.PORT || 5000;
+mongoose.connect(process.env.MONGO_URI as string).then(() => {
+  console.log("✅ MongoDB Atlas Connected - Professional");
+  app.listen(PORT, () => console.log(`🚀 API running on ${PORT}`));
+}).catch(err => console.error("MongoDB Error:", err));
