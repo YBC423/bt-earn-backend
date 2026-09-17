@@ -13,27 +13,55 @@ dotenv.config();
 const app = express();
 
 /* ============================================================
- *  Firebase Admin Initialization
+ *  Firebase Admin Initialization (supports base64 + raw JSON)
  * ============================================================ */
-const serviceAccountPath = path.join(__dirname, "..", "serviceAccountKey.json");
-
 let firebaseServiceAccount: any = null;
+const envValue = process.env.FIREBASE_SERVICE_ACCOUNT;
 
-if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+if (envValue) {
   try {
-    firebaseServiceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    if (envValue.startsWith("base64:")) {
+      const b64 = envValue.slice(7).trim();
+      const decoded = Buffer.from(b64, "base64").toString("utf8");
+      firebaseServiceAccount = JSON.parse(decoded);
+      console.log("Firebase Admin credentials loaded from base64 env var ✅");
+    } else {
+      try {
+        firebaseServiceAccount = JSON.parse(envValue);
+        console.log("Firebase Admin credentials loaded from raw JSON env var ✅");
+      } catch (e1) {
+        try {
+          const decoded = Buffer.from(envValue, "base64").toString("utf8");
+          firebaseServiceAccount = JSON.parse(decoded);
+          console.log("Firebase Admin credentials auto-decoded from base64 ✅");
+        } catch (e2) {
+          console.error("Could not parse FIREBASE_SERVICE_ACCOUNT env var", e1);
+        }
+      }
+    }
   } catch (e) {
-    console.error("Failed to parse FIREBASE_SERVICE_ACCOUNT env var");
+    console.error("Failed to load Firebase creds from env:", e);
   }
-} else if (fs.existsSync(serviceAccountPath)) {
-  firebaseServiceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, "utf8"));
+}
+
+// Fallback: local file
+if (!firebaseServiceAccount) {
+  const serviceAccountPath = path.join(__dirname, "..", "serviceAccountKey.json");
+  if (fs.existsSync(serviceAccountPath)) {
+    try {
+      firebaseServiceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, "utf8"));
+      console.log("Firebase Admin credentials loaded from local file ✅");
+    } catch (e) {
+      console.error("Failed to load local serviceAccountKey.json:", e);
+    }
+  }
 }
 
 if (firebaseServiceAccount) {
   admin.initializeApp({
     credential: admin.credential.cert(firebaseServiceAccount),
   });
-  console.log("Firebase Admin initialized");
+  console.log("Firebase Admin initialized ✅");
 } else {
   console.warn("⚠️ Firebase Admin credentials not found");
 }
@@ -106,6 +134,7 @@ app.get("/", (_req: Request, res: Response) => {
   res.json({
     status: "BT-Earn API is LIVE - Professional",
     version: "3.1 - PHASE-3-SECURED",
+    firebase: firebaseServiceAccount ? "initialized" : "missing",
     time: new Date(),
   });
 });
