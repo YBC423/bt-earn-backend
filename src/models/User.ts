@@ -16,28 +16,34 @@ export interface IUser extends Document {
   };
 
   deposits: Array<{
-    type: string;
+    id: number;
     amount: number;
-    currency: string;
+    asset: string;
+    address: string;
+    network: string;
     status: string;
-    description?: string;
-    date: Date;
+    dateTime: string;
+    txId: string;
   }>;
 
   withdrawals: Array<{
-    type: string;
+    id: number;
     amount: number;
-    currency: string;
+    asset: string;
+    address: string;
+    network: string;
+    txId: string;
+    fee: number;
     status: string;
-    date: Date;
+    dateTime: string;
   }>;
 
   trades: Array<{
-    pair: string;
-    amount: number;
+    id: number;
+    botName: string;
+    asset: string;
     profit: number;
-    type: string;
-    date: Date;
+    timestamp: string;
   }>;
 
   tradeBots: Array<{
@@ -93,32 +99,38 @@ const UserSchema = new Schema<IUser>(
 
     deposits: [
       {
-        type: { type: String, default: "deposit" },
+        id: Number,
         amount: Number,
-        currency: String,
-        status: { type: String, default: "pending" },
-        description: String,
-        date: { type: Date, default: Date.now },
+        asset: String,
+        address: String,
+        network: String,
+        status: { type: String, default: "Pending" },
+        dateTime: String,
+        txId: String,
       },
     ],
 
     withdrawals: [
       {
-        type: { type: String, default: "withdrawal" },
+        id: Number,
         amount: Number,
-        currency: String,
-        status: { type: String, default: "pending" },
-        date: { type: Date, default: Date.now },
+        asset: String,
+        address: String,
+        network: String,
+        txId: String,
+        fee: Number,
+        status: { type: String, default: "Pending" },
+        dateTime: String,
       },
     ],
 
     trades: [
       {
-        pair: String,
-        amount: Number,
+        id: Number,
+        botName: String,
+        asset: String,
         profit: Number,
-        type: String,
-        date: { type: Date, default: Date.now },
+        timestamp: String,
       },
     ],
 
