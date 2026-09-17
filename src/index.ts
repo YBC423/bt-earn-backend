@@ -1,22 +1,163 @@
-import express from "express";
+import express, { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
+import cors from "cors";
 import dotenv from "dotenv";
+import rateLimit from "express-rate-limit";
+import admin from "firebase-admin";
+import path from "path";
+import fs from "fs";
+import authRoutes from "./routes/auth";
 
 dotenv.config();
 
 const app = express();
-app.use(express.json());
 
+/* ============================================================
+ *  Firebase Admin Initialization
+ * ============================================================ */
+const serviceAccountPath = path.join(__dirname, "..", "serviceAccountKey.json");
+
+let firebaseServiceAccount: any = null;
+
+if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+  try {
+    firebaseServiceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+  } catch (e) {
+    console.error("Failed to parse FIREBASE_SERVICE_ACCOUNT env var");
+  }
+} else if (fs.existsSync(serviceAccountPath)) {
+  firebaseServiceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, "utf8"));
+}
+
+if (firebaseServiceAccount) {
+  admin.initializeApp({
+    credential: admin.credential.cert(firebaseServiceAccount),
+  });
+  console.log("Firebase Admin initialized");
+} else {
+  console.warn("⚠️ Firebase Admin credentials not found");
+}
+
+/* ============================================================
+ *  CORS
+ * ============================================================ */
+const allowedOrigins = [
+  "https://bt-earn.xyz",
+  "https://www.bt-earn.xyz",
+  "http://localhost:3000",
+  "http://localhost:5173",
+  "http://127.0.0.1:5500",
+];
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      if (/^https:\/\/[a-z0-9-]+\.github\.io$/i.test(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error(`CORS blocked for origin: ${origin}`));
+    },
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true,
+  })
+);
+
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: true }));
+
+/* ============================================================
+ *  Rate Limiting
+ * ============================================================ */
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  message: {
+    success: false,
+    message: "Too many requests. Please try again later.",
+  },
+});
+
+const tradeLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120,
+  message: {
+    success: false,
+    message: "Too many trade requests. Slow down.",
+  },
+});
+
+app.use("/api/auth/register", authLimiter);
+app.use("/api/auth/login", authLimiter);
+app.use("/api/auth/withdraw", authLimiter);
+app.use("/api/auth/bot-trade", tradeLimiter);
+
+/* ============================================================
+ *  Routes
+ * ============================================================ */
+app.use("/api/auth", authRoutes);
+
+/* ============================================================
+ *  Health checks
+ * ============================================================ */
+app.get("/", (_req: Request, res: Response) => {
+  res.json({
+    status: "BT-Earn API is LIVE - Professional",
+    version: "3.1 - PHASE-3-SECURED",
+    time: new Date(),
+  });
+});
+
+app.get("/health", (_req: Request, res: Response) => {
+  res.json({
+    status: "ok",
+    db: mongoose.connection.readyState === 1 ? "connected" : "disconnected",
+    time: new Date(),
+  });
+});
+
+/* ============================================================
+ *  404 handler
+ * ============================================================ */
+app.use((_req: Request, res: Response) => {
+  res.status(404).json({ success: false, message: "Route not found" });
+});
+
+/* ============================================================
+ *  Global error handler
+ * ============================================================ */
+app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+  console.error("Unhandled error:", err);
+  res.status(err.status || 500).json({
+    success: false,
+    message: err.message || "Internal server error",
+  });
+});
+
+/* ============================================================
+ *  Connect to MongoDB and start server
+ * ============================================================ */
 const PORT = process.env.PORT || 5000;
+const MONGO_URI = process.env.MONGO_URI;
 
-mongoose.connect(process.env.MONGO_URI as string)
-  .then(() => console.log("MongoDB connected"))
-  .catch((err) => console.log(err));
+if (!MONGO_URI) {
+  console.error("MONGO_URI is not set in environment variables");
+  process.exit(1);
+}
 
-app.get("/", (req, res) => {
-  res.send("BT-Earn Backend is Live!");
-});
+mongoose
+  .connect(MONGO_URI)
+  .then(() => {
+    console.log("MongoDB Atlas Connected - Professional");
+    console.log(">>> CONNECTED TO DATABASE:", mongoose.connection.name);
+    console.log(">>> SERVER VERSION: 3.1 - PHASE-3-SECURED");
+    app.listen(PORT, () => console.log(`API running on port ${PORT}`));
+  })
+  .catch((err) => {
+    console.error("MongoDB connection error:", err);
+    process.exit(1);
+  });
 
-app.listen(PORT, () => {
-  console.log(`server running on port ${PORT}`);
-});
+export default app;
