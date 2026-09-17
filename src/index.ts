@@ -6,7 +6,7 @@ import rateLimit from "express-rate-limit";
 import admin from "firebase-admin";
 import path from "path";
 import fs from "fs";
-import authRoutes from "./routes/auth";
+import authRoutes from "./routes/authRoutes";
 
 dotenv.config();
 
