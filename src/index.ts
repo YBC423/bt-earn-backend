@@ -103,6 +103,12 @@ mongoose
   .connect(MONGO_URI)
   .then(() => {
     console.log("MongoDB Atlas Connected - Professional");
+    // ============================================================
+    // DEBUG LINES - Check Render logs for these messages
+    // ============================================================
+    console.log(">>> CONNECTED TO DATABASE:", mongoose.connection.name);
+    console.log(">>> USING URI:", MONGO_URI.replace(/:([^@]+)@/, ":****@"));
+    // ============================================================
     app.listen(PORT, () => console.log(`API running on port ${PORT}`));
   })
   .catch((err) => {
