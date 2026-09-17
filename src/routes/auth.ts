@@ -159,7 +159,6 @@ router.get("/me", async (req: Request, res: Response) => {
 
 /**
  * POST /api/auth/deposit
- * Body: { firebaseUid, amount, asset, address, network }
  */
 router.post("/deposit", async (req: Request, res: Response) => {
   try {
@@ -211,7 +210,6 @@ router.post("/deposit", async (req: Request, res: Response) => {
 
 /**
  * POST /api/auth/withdraw
- * Body: { firebaseUid, amount, asset, address, network, txId, fee }
  */
 router.post("/withdraw", async (req: Request, res: Response) => {
   try {
@@ -267,8 +265,7 @@ router.post("/withdraw", async (req: Request, res: Response) => {
 
 /**
  * POST /api/auth/bot-trade
- * Body: { firebaseUid, botName, asset, profit, timestamp }
- * This is NEW - records bot profits to MongoDB and updates balance
+ * Records bot profits to MongoDB and updates balance
  */
 router.post("/bot-trade", async (req: Request, res: Response) => {
   try {
@@ -296,7 +293,6 @@ router.post("/bot-trade", async (req: Request, res: Response) => {
       timestamp: timestamp || new Date().toISOString(),
     };
 
-    // Update balance & wallets with profit (can be negative for loss)
     const updatedUser = await User.findOneAndUpdate(
       { firebaseUid },
       {
