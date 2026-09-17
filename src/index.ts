@@ -54,7 +54,7 @@ app.use("/api/auth", authRoutes);
 app.get("/", (_req: Request, res: Response) => {
   res.json({
     status: "BT-Earn API is LIVE - Professional",
-    version: "2.0 - MongoDB Enterprise",
+    version: "3.0 - BOT-TRADE-DEPLOYED",
     time: new Date(),
   });
 });
@@ -108,6 +108,7 @@ mongoose
     // ============================================================
     console.log(">>> CONNECTED TO DATABASE:", mongoose.connection.name);
     console.log(">>> USING URI:", MONGO_URI.replace(/:([^@]+)@/, ":****@"));
+    console.log(">>> SERVER VERSION: 3.0 - BOT-TRADE-DEPLOYED");
     // ============================================================
     app.listen(PORT, () => console.log(`API running on port ${PORT}`));
   })
