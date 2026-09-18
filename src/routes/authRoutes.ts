@@ -4,6 +4,55 @@ import { verifyFirebaseToken } from "../middlewares/authMiddleware";
 
 const router = Router();
 
+/* ============================================================
+ *  BOT PROFIT CALCULATION (server-side, trusted)
+ * ============================================================ */
+function calculateProfitLowRisk(amount: number) {
+  const isWin = Math.random() * 100 <= 60;
+  if (isWin) {
+    const profitPercent = 0.1 + Math.random() * 0.3;
+    let profit = amount * (profitPercent / 100);
+    if (profit < 0.03 && amount >= 10) profit = 0.03;
+    return { profit, isWin: true, percent: profitPercent };
+  } else {
+    const lossPercent = 0.05 + Math.random() * 0.15;
+    let loss = amount * (lossPercent / 100);
+    if (loss < 0.02 && amount >= 10) loss = 0.02;
+    return { profit: -loss, isWin: false, percent: lossPercent };
+  }
+}
+
+function calculateProfitMediumRisk(amount: number) {
+  const mode = Math.random() * 100 <= 60 ? "highProfit" : "highLoss";
+  let isWin: boolean;
+  let profitPercent: number;
+  let lossPercent: number;
+
+  if (mode === "highProfit") {
+    isWin = Math.random() * 100 <= 60;
+    profitPercent = 0.3 + Math.random() * 0.9;
+    lossPercent = 0.15 + Math.random() * 0.45;
+  } else {
+    isWin = Math.random() * 100 <= 40;
+    profitPercent = 0.15 + Math.random() * 0.45;
+    lossPercent = 0.3 + Math.random() * 0.9;
+  }
+
+  if (isWin) {
+    let profit = amount * (profitPercent / 100);
+    if (profit < 0.1 && amount >= 10) profit = 0.1;
+    return { profit, isWin: true, percent: profitPercent };
+  } else {
+    let loss = amount * (lossPercent / 100);
+    if (loss < 0.08 && amount >= 10) loss = 0.08;
+    return { profit: -loss, isWin: false, percent: lossPercent };
+  }
+}
+
+/* ============================================================
+ *  AUTH ROUTES
+ * ============================================================ */
+
 router.post("/register", async (req: Request, res: Response) => {
   try {
     const { name, email, country, firebaseUid } = req.body || {};
@@ -55,20 +104,7 @@ router.post("/register", async (req: Request, res: Response) => {
     return res.status(201).json({
       success: true,
       message: "User registered successfully",
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        country: user.country,
-        firebaseUid: user.firebaseUid,
-        balance: user.balance,
-        wallets: user.wallets,
-        deposits: user.deposits,
-        withdrawals: user.withdrawals,
-        tradeBots: user.tradeBots,
-        lastLogin: user.lastLogin,
-        createdAt: user.createdAt,
-      },
+      user,
     });
   } catch (err: any) {
     console.error("Register error:", err);
@@ -214,12 +250,25 @@ router.post("/withdraw", verifyFirebaseToken, async (req: Request, res: Response
   }
 });
 
-router.post("/bot-trade", verifyFirebaseToken, async (req: Request, res: Response) => {
+/* ============================================================
+ *  BOT RUN — The frontend cannot fake the profit anymore
+ *  Body: { botName, asset, amountPerTrade }
+ * ============================================================ */
+router.post("/bot-run", verifyFirebaseToken, async (req: Request, res: Response) => {
   try {
     const firebaseUid = req.verifiedFirebaseUid!;
-    const { botName, asset, profit, timestamp } = req.body || {};
-    if (profit === undefined) {
-      return res.status(400).json({ success: false, message: "profit is required" });
+    const { botName, asset, amountPerTrade } = req.body || {};
+
+    if (!botName || !amountPerTrade) {
+      return res.status(400).json({
+        success: false,
+        message: "botName and amountPerTrade are required",
+      });
+    }
+
+    const amt = Number(amountPerTrade);
+    if (isNaN(amt) || amt <= 0) {
+      return res.status(400).json({ success: false, message: "Invalid amountPerTrade" });
     }
 
     const user = await User.findOne({ firebaseUid });
@@ -227,12 +276,27 @@ router.post("/bot-trade", verifyFirebaseToken, async (req: Request, res: Respons
       return res.status(404).json({ success: false, message: "User not found" });
     }
 
+    // Prevent trading if balance is below the required amount
+    if ((user.wallets.usdt || 0) < amt) {
+      return res.status(400).json({
+        success: false,
+        message: "Insufficient balance to run bot trade",
+        newBalance: user.wallets.usdt || 0,
+      });
+    }
+
+    // Server-side random result — this is the key security improvement
+    const isMediumRisk = botName === "ETH DCA Pro";
+    const result = isMediumRisk
+      ? calculateProfitMediumRisk(amt)
+      : calculateProfitLowRisk(amt);
+
     const trade = {
       id: Date.now(),
       botName: botName || "Unknown Bot",
       asset: asset || "USDT",
-      profit: Number(profit),
-      timestamp: timestamp || new Date().toISOString(),
+      profit: Number(result.profit.toFixed(4)),
+      timestamp: new Date().toISOString(),
     };
 
     const updatedUser = await User.findOneAndUpdate(
@@ -240,9 +304,9 @@ router.post("/bot-trade", verifyFirebaseToken, async (req: Request, res: Respons
       {
         $push: { trades: trade },
         $inc: {
-          "wallets.usdt": Number(profit),
-          balance: Number(profit),
-          totalProfit: Number(profit),
+          "wallets.usdt": trade.profit,
+          balance: trade.profit,
+          totalProfit: trade.profit,
         },
       },
       { new: true }
@@ -250,13 +314,18 @@ router.post("/bot-trade", verifyFirebaseToken, async (req: Request, res: Respons
 
     return res.json({
       success: true,
-      message: "Bot trade recorded",
+      message: "Bot run recorded",
       trade,
+      isWin: result.isWin,
+      percent: Number(result.percent.toFixed(4)),
       newBalance: updatedUser?.wallets?.usdt || 0,
     });
   } catch (err: any) {
-    console.error("Bot trade error:", err);
-    return res.status(500).json({ success: false, message: "Server error during bot trade" });
+    console.error("Bot run error:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Server error during bot run",
+    });
   }
 });
 
