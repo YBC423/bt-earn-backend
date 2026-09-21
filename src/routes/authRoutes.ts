@@ -329,7 +329,7 @@ router.post("/bot-run", verifyFirebaseToken, async (req: Request, res: Response)
 
 /* ============================================================
  *  PUBLIC MARKET DATA — charts + order book
- *  No auth. Binance first, CoinGecko fallback, then synthetic.
+ *  Bybit → OKX → synthetic (no auth required)
  * ============================================================ */
 
 const chartCache: Record<string, { data: any; time: number }> = {};
@@ -347,62 +347,73 @@ router.get("/chart/:symbol", async (req: Request, res: Response) => {
       return res.json({ success: true, source: "cache", candles: cached.data });
     }
 
-    // Try Binance first
+    // Map intervals to Bybit format
+    const bybitInterval =
+      interval === "1m" ? "1" :
+      interval === "5m" ? "5" :
+      interval === "15m" ? "15" :
+      interval === "30m" ? "30" :
+      interval === "1h" ? "60" :
+      interval === "1D" ? "D" : "1";
+
+    // Try Bybit first (no geo-block)
     try {
-      const binanceUrl = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
-      const binanceRes = await fetch(binanceUrl);
-      if (binanceRes.ok) {
-        const raw: any = await binanceRes.json();
-        const candles = raw.map((k: any[]) => ({
-          time: k[0],
-          open: parseFloat(k[1]),
-          high: parseFloat(k[2]),
-          low: parseFloat(k[3]),
-          close: parseFloat(k[4]),
-        }));
-        chartCache[cacheKey] = { data: candles, time: Date.now() };
-        return res.json({ success: true, source: "binance", candles });
+      const bybitUrl = `https://api.bybit.com/v5/market/kline?category=spot&symbol=${symbol}&interval=${bybitInterval}&limit=${limit}`;
+      const bybitRes = await fetch(bybitUrl);
+      if (bybitRes.ok) {
+        const bybitData: any = await bybitRes.json();
+        const list = bybitData?.result?.list || [];
+        if (list.length > 0) {
+          const candles = list.reverse().map((k: string[]) => ({
+            time: parseInt(k[0]),
+            open: parseFloat(k[1]),
+            high: parseFloat(k[2]),
+            low: parseFloat(k[3]),
+            close: parseFloat(k[4]),
+          }));
+          chartCache[cacheKey] = { data: candles, time: Date.now() };
+          return res.json({ success: true, source: "bybit", candles });
+        }
       } else {
-        console.log("Binance chart HTTP error:", binanceRes.status);
+        console.log("Bybit chart HTTP error:", bybitRes.status);
       }
     } catch (e: any) {
-      console.log("Binance chart threw:", e?.message || e);
+      console.log("Bybit chart threw:", e?.message || e);
     }
 
-    // Fallback: CoinGecko
+    // Fallback: OKX
     try {
-      const coinMap: Record<string, string> = {
-        BTCUSDT: "bitcoin",
-        ETHUSDT: "ethereum",
-        BNBUSDT: "binancecoin",
-        SOLUSDT: "solana",
-        XRPUSDT: "ripple",
-        DOGEUSDT: "dogecoin",
-        ADAUSDT: "cardano",
-      };
-      const coinId = coinMap[symbol] || "bitcoin";
-      const days = interval === "1D" ? 30 : interval === "1h" ? 7 : 1;
-      const cgUrl = `https://api.coingecko.com/api/v3/coins/${coinId}/ohlc?vs_currency=usd&days=${days}`;
-      const cgRes = await fetch(cgUrl);
-      if (cgRes.ok) {
-        const cgRaw: any = await cgRes.json();
-        const candles = (cgRaw || []).map((k: any[]) => ({
-          time: k[0],
-          open: k[1],
-          high: k[2],
-          low: k[3],
-          close: k[4],
-        }));
-        chartCache[cacheKey] = { data: candles, time: Date.now() };
-        return res.json({ success: true, source: "coingecko", candles });
+      const okxInterval =
+        interval === "1m" ? "1m" :
+        interval === "5m" ? "5m" :
+        interval === "15m" ? "15m" :
+        interval === "30m" ? "30m" :
+        interval === "1h" ? "1H" :
+        interval === "1D" ? "1D" : "1m";
+      const okxUrl = `https://www.okx.com/api/v5/market/candles?instId=${symbol}&bar=${okxInterval}&limit=${limit}`;
+      const okxRes = await fetch(okxUrl);
+      if (okxRes.ok) {
+        const okxData: any = await okxRes.json();
+        const list = okxData?.data || [];
+        if (list.length > 0) {
+          const candles = list.reverse().map((k: string[]) => ({
+            time: parseInt(k[0]),
+            open: parseFloat(k[1]),
+            high: parseFloat(k[2]),
+            low: parseFloat(k[3]),
+            close: parseFloat(k[4]),
+          }));
+          chartCache[cacheKey] = { data: candles, time: Date.now() };
+          return res.json({ success: true, source: "okx", candles });
+        }
       } else {
-        console.log("CoinGecko chart HTTP error:", cgRes.status);
+        console.log("OKX chart HTTP error:", okxRes.status);
       }
     } catch (e: any) {
-      console.log("CoinGecko chart threw:", e?.message || e);
+      console.log("OKX chart threw:", e?.message || e);
     }
 
-    // Final fallback: synthetic so chart still renders
+    // Final fallback: synthetic
     const basePrice = symbol.startsWith("BTC") ? 85000
       : symbol.startsWith("ETH") ? 2000
       : symbol.startsWith("BNB") ? 580
@@ -439,29 +450,33 @@ router.get("/orderbook/:symbol", async (req: Request, res: Response) => {
   try {
     const { symbol } = req.params;
 
-    // Try Binance public depth
+    // Try Bybit orderbook first
     try {
-      const binanceUrl = `https://api.binance.com/api/v3/depth?symbol=${symbol}&limit=10`;
-      const binanceRes = await fetch(binanceUrl);
-      if (binanceRes.ok) {
-        const data: any = await binanceRes.json();
-        const bids = (data.bids || []).map((b: string[]) => ({
-          price: parseFloat(b[0]),
-          qty: parseFloat(b[1]),
-        }));
-        const asks = (data.asks || []).map((a: string[]) => ({
-          price: parseFloat(a[0]),
-          qty: parseFloat(a[1]),
-        }));
-        return res.json({ success: true, source: "binance", bids, asks });
+      const bybitUrl = `https://api.bybit.com/v5/market/orderbook?category=spot&symbol=${symbol}&limit=10`;
+      const bybitRes = await fetch(bybitUrl);
+      if (bybitRes.ok) {
+        const bybitData: any = await bybitRes.json();
+        const b = bybitData?.result?.b || [];
+        const a = bybitData?.result?.a || [];
+        if (b.length > 0 && a.length > 0) {
+          const bids = b.map((x: string[]) => ({
+            price: parseFloat(x[0]),
+            qty: parseFloat(x[1]),
+          }));
+          const asks = a.map((x: string[]) => ({
+            price: parseFloat(x[0]),
+            qty: parseFloat(x[1]),
+          }));
+          return res.json({ success: true, source: "bybit", bids, asks });
+        }
       } else {
-        console.log("Binance orderbook HTTP error:", binanceRes.status);
+        console.log("Bybit orderbook HTTP error:", bybitRes.status);
       }
     } catch (e: any) {
-      console.log("Binance orderbook threw:", e?.message || e);
+      console.log("Bybit orderbook threw:", e?.message || e);
     }
 
-    // Fallback: synthetic around known price
+    // Fallback: synthetic
     const basePrice = symbol.startsWith("BTC") ? 85000
       : symbol.startsWith("ETH") ? 2000
       : symbol.startsWith("BNB") ? 580
