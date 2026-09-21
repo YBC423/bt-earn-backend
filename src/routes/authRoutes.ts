@@ -1,13 +1,11 @@
 import { Router, Request, Response } from "express";
 import User from "../models/User";
 import { verifyFirebaseToken } from "../middlewares/authMiddleware";
-import { runBtcBot } from "../services/btcBot";
 
 const router = Router();
 
 /* ============================================================
  *  BOT PROFIT CALCULATION (server-side, trusted)
- *  Used only for ETH bot until MT5 is wired.
  * ============================================================ */
 function calculateProfitLowRisk(amount: number) {
   const isWin = Math.random() * 100 <= 60;
@@ -253,7 +251,7 @@ router.post("/withdraw", verifyFirebaseToken, async (req: Request, res: Response
 });
 
 /* ============================================================
- *  BOT RUN — BTC uses REAL Binance testnet. ETH still simulated.
+ *  BOT RUN — Server-side simulated profit (no exchange deps)
  *  Body: { botName, asset, amountPerTrade }
  * ============================================================ */
 router.post("/bot-run", verifyFirebaseToken, async (req: Request, res: Response) => {
@@ -286,142 +284,8 @@ router.post("/bot-run", verifyFirebaseToken, async (req: Request, res: Response)
       });
     }
 
-    /* ---------- BTC BOT → REAL BINANCE TESTNET ---------- */
-    if (botName === "Bitcoin Accumulation") {
-      const currentlyHolding = (user.wallets.btc || 0) > 0;
-
-      const result = await runBtcBot(amt, currentlyHolding);
-
-      // No actionable signal → log a HOLD trade, no balance change
-      if (!result.executed) {
-        const trade = {
-          id: Date.now(),
-          botName,
-          asset: asset || "BTC",
-          profit: 0,
-          side: null,
-          price: result.decision.price,
-          signal: result.decision.signal,
-          reason: result.decision.reason,
-          timestamp: new Date().toISOString(),
-          exchange: "binance-testnet",
-        };
-
-        await User.updateOne({ firebaseUid }, { $push: { trades: trade } });
-
-        return res.json({
-          success: true,
-          message: "No actionable signal — HOLD",
-          trade,
-          isWin: false,
-          percent: 0,
-          newBalance: user.wallets.usdt || 0,
-          holding: currentlyHolding,
-          signal: result.decision.signal,
-          reason: result.decision.reason,
-        });
-      }
-
-      // Real order was placed on Binance testnet
-      const order = result.order;
-      const filledPrice = parseFloat(
-        order.fills?.[0]?.price || result.decision.price.toString()
-      );
-      const executedQty = parseFloat(order.executedQty || "0");
-      const quoteQty = parseFloat(order.cummulativeQuoteQty || "0");
-
-      let profit = 0;
-      const side: "BUY" | "SELL" = result.side!;
-
-      if (side === "BUY") {
-        await User.updateOne(
-          { firebaseUid },
-          {
-            $inc: {
-              "wallets.usdt": -quoteQty,
-              "wallets.btc": executedQty,
-              balance: -quoteQty,
-            },
-            $push: {
-              trades: {
-                id: Date.now(),
-                botName,
-                asset: asset || "BTC",
-                profit: 0,
-                side: "BUY",
-                price: filledPrice,
-                quantity: executedQty,
-                quoteQty,
-                orderId: order.orderId,
-                signal: result.decision.signal,
-                reason: result.decision.reason,
-                timestamp: new Date().toISOString(),
-                exchange: "binance-testnet",
-              },
-            },
-          }
-        );
-      } else {
-        const avgCost = (user as any).avgBtcCost || filledPrice;
-        profit = (filledPrice - avgCost) * executedQty;
-
-        await User.updateOne(
-          { firebaseUid },
-          {
-            $inc: {
-              "wallets.usdt": quoteQty,
-              "wallets.btc": -executedQty,
-              balance: quoteQty,
-              totalProfit: profit,
-            },
-            $push: {
-              trades: {
-                id: Date.now(),
-                botName,
-                asset: asset || "BTC",
-                profit: Number(profit.toFixed(4)),
-                side: "SELL",
-                price: filledPrice,
-                quantity: executedQty,
-                quoteQty,
-                orderId: order.orderId,
-                signal: result.decision.signal,
-                reason: result.decision.reason,
-                timestamp: new Date().toISOString(),
-                exchange: "binance-testnet",
-              },
-            },
-          }
-        );
-      }
-
-      const updatedUser = await User.findOne({ firebaseUid });
-
-      return res.json({
-        success: true,
-        message: `${side} order executed on Binance testnet`,
-        trade: {
-          side,
-          price: filledPrice,
-          quantity: executedQty,
-          profit: Number(profit.toFixed(4)),
-          orderId: order.orderId,
-        },
-        isWin: profit >= 0,
-        percent:
-          quoteQty > 0
-            ? Number(((profit / quoteQty) * 100).toFixed(4))
-            : 0,
-        newBalance: updatedUser?.wallets?.usdt || 0,
-        holding: (updatedUser?.wallets?.btc || 0) > 0,
-        signal: result.decision.signal,
-        reason: result.decision.reason,
-      });
-    }
-
-    /* ---------- ETH BOT → still simulated (until MT5) ---------- */
     const isMediumRisk = botName === "ETH DCA Pro";
-    const fakeResult = isMediumRisk
+    const result = isMediumRisk
       ? calculateProfitMediumRisk(amt)
       : calculateProfitLowRisk(amt);
 
@@ -429,9 +293,8 @@ router.post("/bot-run", verifyFirebaseToken, async (req: Request, res: Response)
       id: Date.now(),
       botName: botName || "Unknown Bot",
       asset: asset || "USDT",
-      profit: Number(fakeResult.profit.toFixed(4)),
+      profit: Number(result.profit.toFixed(4)),
       timestamp: new Date().toISOString(),
-      exchange: "simulated",
     };
 
     const updatedUser = await User.findOneAndUpdate(
@@ -449,17 +312,17 @@ router.post("/bot-run", verifyFirebaseToken, async (req: Request, res: Response)
 
     return res.json({
       success: true,
-      message: "Bot run recorded (simulated — ETH pending MT5)",
+      message: "Bot run recorded",
       trade,
-      isWin: fakeResult.isWin,
-      percent: Number(fakeResult.percent.toFixed(4)),
+      isWin: result.isWin,
+      percent: Number(result.percent.toFixed(4)),
       newBalance: updatedUser?.wallets?.usdt || 0,
     });
   } catch (err: any) {
     console.error("Bot run error:", err);
     return res.status(500).json({
       success: false,
-      message: err.message || "Server error during bot run",
+      message: "Server error during bot run",
     });
   }
 });
