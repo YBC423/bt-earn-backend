@@ -329,7 +329,7 @@ router.post("/bot-run", verifyFirebaseToken, async (req: Request, res: Response)
 
 /* ============================================================
  *  PUBLIC MARKET DATA — charts + order book
- *  Bybit → OKX → synthetic (no auth required)
+ *  Yahoo Finance (no geo-block). Synthetic orderbook fallback.
  * ============================================================ */
 
 const chartCache: Record<string, { data: any; time: number }> = {};
@@ -347,70 +347,67 @@ router.get("/chart/:symbol", async (req: Request, res: Response) => {
       return res.json({ success: true, source: "cache", candles: cached.data });
     }
 
-    // Map intervals to Bybit format
-    const bybitInterval =
-      interval === "1m" ? "1" :
-      interval === "5m" ? "5" :
-      interval === "15m" ? "15" :
-      interval === "30m" ? "30" :
-      interval === "1h" ? "60" :
-      interval === "1D" ? "D" : "1";
+    // Convert symbol like "BTCUSDT" → "BTC-USD"
+    const base = symbol.replace(/USDT$/i, "").toUpperCase();
+    const yahooSymbol = `${base}-USD`;
 
-    // Try Bybit first (no geo-block)
+    // Yahoo Finance interval map
+    const yahooInterval =
+      interval === "1m" ? "1m" :
+      interval === "5m" ? "5m" :
+      interval === "15m" ? "15m" :
+      interval === "30m" ? "30m" :
+      interval === "1h" ? "60m" :
+      interval === "1D" ? "1d" : "1m";
+
+    const yahooRange =
+      interval === "1m" ? "1d" :
+      interval === "5m" ? "5d" :
+      interval === "15m" ? "5d" :
+      interval === "30m" ? "1mo" :
+      interval === "1h" ? "1mo" :
+      interval === "1D" ? "1y" : "1d";
+
+    // Try Yahoo Finance
     try {
-      const bybitUrl = `https://api.bybit.com/v5/market/kline?category=spot&symbol=${symbol}&interval=${bybitInterval}&limit=${limit}`;
-      const bybitRes = await fetch(bybitUrl);
-      if (bybitRes.ok) {
-        const bybitData: any = await bybitRes.json();
-        const list = bybitData?.result?.list || [];
-        if (list.length > 0) {
-          const candles = list.reverse().map((k: string[]) => ({
-            time: parseInt(k[0]),
-            open: parseFloat(k[1]),
-            high: parseFloat(k[2]),
-            low: parseFloat(k[3]),
-            close: parseFloat(k[4]),
-          }));
-          chartCache[cacheKey] = { data: candles, time: Date.now() };
-          return res.json({ success: true, source: "bybit", candles });
+      const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=${yahooInterval}&range=${yahooRange}`;
+      const yahooRes = await fetch(yahooUrl, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (compatible; BT-EARN/1.0)",
+        },
+      });
+      if (yahooRes.ok) {
+        const yahooData: any = await yahooRes.json();
+        const result = yahooData?.chart?.result?.[0];
+        const timestamps = result?.timestamp || [];
+        const quote = result?.indicators?.quote?.[0] || {};
+        const opens = quote.open || [];
+        const highs = quote.high || [];
+        const lows = quote.low || [];
+        const closes = quote.close || [];
+
+        const candles: any[] = [];
+        for (let i = 0; i < timestamps.length; i++) {
+          if (opens[i] == null || closes[i] == null) continue;
+          candles.push({
+            time: timestamps[i] * 1000,
+            open: opens[i],
+            high: highs[i],
+            low: lows[i],
+            close: closes[i],
+          });
+        }
+
+        if (candles.length > 0) {
+          const trimmed = candles.slice(-limit);
+          chartCache[cacheKey] = { data: trimmed, time: Date.now() };
+          return res.json({ success: true, source: "yahoo", candles: trimmed });
         }
       } else {
-        console.log("Bybit chart HTTP error:", bybitRes.status);
+        console.log("Yahoo chart HTTP error:", yahooRes.status);
       }
     } catch (e: any) {
-      console.log("Bybit chart threw:", e?.message || e);
-    }
-
-    // Fallback: OKX
-    try {
-      const okxInterval =
-        interval === "1m" ? "1m" :
-        interval === "5m" ? "5m" :
-        interval === "15m" ? "15m" :
-        interval === "30m" ? "30m" :
-        interval === "1h" ? "1H" :
-        interval === "1D" ? "1D" : "1m";
-      const okxUrl = `https://www.okx.com/api/v5/market/candles?instId=${symbol}&bar=${okxInterval}&limit=${limit}`;
-      const okxRes = await fetch(okxUrl);
-      if (okxRes.ok) {
-        const okxData: any = await okxRes.json();
-        const list = okxData?.data || [];
-        if (list.length > 0) {
-          const candles = list.reverse().map((k: string[]) => ({
-            time: parseInt(k[0]),
-            open: parseFloat(k[1]),
-            high: parseFloat(k[2]),
-            low: parseFloat(k[3]),
-            close: parseFloat(k[4]),
-          }));
-          chartCache[cacheKey] = { data: candles, time: Date.now() };
-          return res.json({ success: true, source: "okx", candles });
-        }
-      } else {
-        console.log("OKX chart HTTP error:", okxRes.status);
-      }
-    } catch (e: any) {
-      console.log("OKX chart threw:", e?.message || e);
+      console.log("Yahoo chart threw:", e?.message || e);
     }
 
     // Final fallback: synthetic
@@ -476,7 +473,7 @@ router.get("/orderbook/:symbol", async (req: Request, res: Response) => {
       console.log("Bybit orderbook threw:", e?.message || e);
     }
 
-    // Fallback: synthetic
+    // Synthetic orderbook fallback
     const basePrice = symbol.startsWith("BTC") ? 85000
       : symbol.startsWith("ETH") ? 2000
       : symbol.startsWith("BNB") ? 580
