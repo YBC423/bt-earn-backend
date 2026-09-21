@@ -1,6 +1,7 @@
 import { Router, Request, Response } from "express";
 import User from "../models/User";
 import { verifyFirebaseToken } from "../middlewares/authMiddleware";
+import fetch from "node-fetch";
 
 const router = Router();
 
@@ -251,8 +252,7 @@ router.post("/withdraw", verifyFirebaseToken, async (req: Request, res: Response
 });
 
 /* ============================================================
- *  BOT RUN — Server-side simulated profit (no exchange deps)
- *  Body: { botName, asset, amountPerTrade }
+ *  BOT RUN — Server-side simulated profit
  * ============================================================ */
 router.post("/bot-run", verifyFirebaseToken, async (req: Request, res: Response) => {
   try {
@@ -324,6 +324,125 @@ router.post("/bot-run", verifyFirebaseToken, async (req: Request, res: Response)
       success: false,
       message: "Server error during bot run",
     });
+  }
+});
+
+/* ============================================================
+ *  PUBLIC MARKET DATA — charts + order book
+ *  No auth. Binance first, CoinGecko fallback.
+ * ============================================================ */
+
+const chartCache: Record<string, { data: any; time: number }> = {};
+const CACHE_TTL = 30000; // 30s
+
+router.get("/chart/:symbol", async (req: Request, res: Response) => {
+  try {
+    const { symbol } = req.params;
+    const interval = (req.query.interval as string) || "1m";
+    const limit = parseInt(req.query.limit as string) || 50;
+
+    const cacheKey = `${symbol}-${interval}-${limit}`;
+    const cached = chartCache[cacheKey];
+    if (cached && Date.now() - cached.time < CACHE_TTL) {
+      return res.json({ success: true, source: "cache", candles: cached.data });
+    }
+
+    // Try Binance first
+    try {
+      const binanceUrl = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+      const binanceRes = await fetch(binanceUrl);
+      if (binanceRes.ok) {
+        const raw: any = await binanceRes.json();
+        const candles = raw.map((k: any[]) => ({
+          time: k[0],
+          open: parseFloat(k[1]),
+          high: parseFloat(k[2]),
+          low: parseFloat(k[3]),
+          close: parseFloat(k[4]),
+        }));
+        chartCache[cacheKey] = { data: candles, time: Date.now() };
+        return res.json({ success: true, source: "binance", candles });
+      }
+    } catch (e) {
+      console.log("Binance chart failed, falling back to CoinGecko");
+    }
+
+    // Fallback: CoinGecko
+    const coinMap: Record<string, string> = {
+      BTCUSDT: "bitcoin",
+      ETHUSDT: "ethereum",
+      BNBUSDT: "binancecoin",
+      SOLUSDT: "solana",
+      XRPUSDT: "ripple",
+      DOGEUSDT: "dogecoin",
+      ADAUSDT: "cardano",
+    };
+    const coinId = coinMap[symbol] || "bitcoin";
+    const days = interval === "1D" ? 30 : interval === "1h" ? 7 : 1;
+    const cgUrl = `https://api.coingecko.com/api/v3/coins/${coinId}/ohlc?vs_currency=usd&days=${days}`;
+    const cgRes = await fetch(cgUrl);
+    const cgRaw: any = await cgRes.json();
+    const candles = (cgRaw || []).map((k: any[]) => ({
+      time: k[0],
+      open: k[1],
+      high: k[2],
+      low: k[3],
+      close: k[4],
+    }));
+    chartCache[cacheKey] = { data: candles, time: Date.now() };
+    return res.json({ success: true, source: "coingecko", candles });
+  } catch (err: any) {
+    console.error("Chart error:", err);
+    return res.status(500).json({ success: false, message: "Chart fetch failed" });
+  }
+});
+
+router.get("/orderbook/:symbol", async (req: Request, res: Response) => {
+  try {
+    const { symbol } = req.params;
+
+    // Try Binance public depth
+    try {
+      const binanceUrl = `https://api.binance.com/api/v3/depth?symbol=${symbol}&limit=10`;
+      const binanceRes = await fetch(binanceUrl);
+      if (binanceRes.ok) {
+        const data: any = await binanceRes.json();
+        const bids = (data.bids || []).map((b: string[]) => ({
+          price: parseFloat(b[0]),
+          qty: parseFloat(b[1]),
+        }));
+        const asks = (data.asks || []).map((a: string[]) => ({
+          price: parseFloat(a[0]),
+          qty: parseFloat(a[1]),
+        }));
+        return res.json({ success: true, source: "binance", bids, asks });
+      }
+    } catch (e) {
+      console.log("Binance orderbook failed");
+    }
+
+    // Fallback: synthetic around current price
+    const priceRes = await fetch(
+      "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
+    );
+    const priceData: any = await priceRes.json();
+    const price = priceData.bitcoin?.usd || 85000;
+    const bids: any[] = [];
+    const asks: any[] = [];
+    for (let i = 0; i < 10; i++) {
+      bids.push({
+        price: price * (1 - (i + 1) * 0.0002),
+        qty: Math.random() * 2,
+      });
+      asks.push({
+        price: price * (1 + (i + 1) * 0.0002),
+        qty: Math.random() * 2,
+      });
+    }
+    return res.json({ success: true, source: "synthetic", bids, asks });
+  } catch (err: any) {
+    console.error("Orderbook error:", err);
+    return res.status(500).json({ success: false, message: "Orderbook fetch failed" });
   }
 });
 
