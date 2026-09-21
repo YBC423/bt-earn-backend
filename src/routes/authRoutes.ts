@@ -329,7 +329,7 @@ router.post("/bot-run", verifyFirebaseToken, async (req: Request, res: Response)
 
 /* ============================================================
  *  PUBLIC MARKET DATA — charts + order book
- *  No auth. Binance first, CoinGecko fallback.
+ *  No auth. Binance first, CoinGecko fallback, then synthetic.
  * ============================================================ */
 
 const chartCache: Record<string, { data: any; time: number }> = {};
@@ -362,37 +362,75 @@ router.get("/chart/:symbol", async (req: Request, res: Response) => {
         }));
         chartCache[cacheKey] = { data: candles, time: Date.now() };
         return res.json({ success: true, source: "binance", candles });
+      } else {
+        console.log("Binance chart HTTP error:", binanceRes.status);
       }
-    } catch (e) {
-      console.log("Binance chart failed, falling back to CoinGecko");
+    } catch (e: any) {
+      console.log("Binance chart threw:", e?.message || e);
     }
 
     // Fallback: CoinGecko
-    const coinMap: Record<string, string> = {
-      BTCUSDT: "bitcoin",
-      ETHUSDT: "ethereum",
-      BNBUSDT: "binancecoin",
-      SOLUSDT: "solana",
-      XRPUSDT: "ripple",
-      DOGEUSDT: "dogecoin",
-      ADAUSDT: "cardano",
-    };
-    const coinId = coinMap[symbol] || "bitcoin";
-    const days = interval === "1D" ? 30 : interval === "1h" ? 7 : 1;
-    const cgUrl = `https://api.coingecko.com/api/v3/coins/${coinId}/ohlc?vs_currency=usd&days=${days}`;
-    const cgRes = await fetch(cgUrl);
-    const cgRaw: any = await cgRes.json();
-    const candles = (cgRaw || []).map((k: any[]) => ({
-      time: k[0],
-      open: k[1],
-      high: k[2],
-      low: k[3],
-      close: k[4],
-    }));
-    chartCache[cacheKey] = { data: candles, time: Date.now() };
-    return res.json({ success: true, source: "coingecko", candles });
+    try {
+      const coinMap: Record<string, string> = {
+        BTCUSDT: "bitcoin",
+        ETHUSDT: "ethereum",
+        BNBUSDT: "binancecoin",
+        SOLUSDT: "solana",
+        XRPUSDT: "ripple",
+        DOGEUSDT: "dogecoin",
+        ADAUSDT: "cardano",
+      };
+      const coinId = coinMap[symbol] || "bitcoin";
+      const days = interval === "1D" ? 30 : interval === "1h" ? 7 : 1;
+      const cgUrl = `https://api.coingecko.com/api/v3/coins/${coinId}/ohlc?vs_currency=usd&days=${days}`;
+      const cgRes = await fetch(cgUrl);
+      if (cgRes.ok) {
+        const cgRaw: any = await cgRes.json();
+        const candles = (cgRaw || []).map((k: any[]) => ({
+          time: k[0],
+          open: k[1],
+          high: k[2],
+          low: k[3],
+          close: k[4],
+        }));
+        chartCache[cacheKey] = { data: candles, time: Date.now() };
+        return res.json({ success: true, source: "coingecko", candles });
+      } else {
+        console.log("CoinGecko chart HTTP error:", cgRes.status);
+      }
+    } catch (e: any) {
+      console.log("CoinGecko chart threw:", e?.message || e);
+    }
+
+    // Final fallback: synthetic so chart still renders
+    const basePrice = symbol.startsWith("BTC") ? 85000
+      : symbol.startsWith("ETH") ? 2000
+      : symbol.startsWith("BNB") ? 580
+      : symbol.startsWith("SOL") ? 145
+      : 100;
+
+    const now = Date.now();
+    const intervalMs =
+      interval === "1m" ? 60000 :
+      interval === "5m" ? 300000 :
+      interval === "15m" ? 900000 :
+      interval === "30m" ? 1800000 :
+      interval === "1h" ? 3600000 :
+      interval === "1D" ? 86400000 : 60000;
+
+    const candles = [];
+    let price = basePrice;
+    for (let i = limit; i > 0; i--) {
+      const open = price;
+      const close = open * (1 + (Math.random() - 0.5) * 0.002);
+      const high = Math.max(open, close) * (1 + Math.random() * 0.001);
+      const low = Math.min(open, close) * (1 - Math.random() * 0.001);
+      candles.push({ time: now - i * intervalMs, open, high, low, close });
+      price = close;
+    }
+    return res.json({ success: true, source: "synthetic", candles });
   } catch (err: any) {
-    console.error("Chart error:", err);
+    console.error("Chart fatal error:", err?.message || err);
     return res.status(500).json({ success: false, message: "Chart fetch failed" });
   }
 });
@@ -416,32 +454,35 @@ router.get("/orderbook/:symbol", async (req: Request, res: Response) => {
           qty: parseFloat(a[1]),
         }));
         return res.json({ success: true, source: "binance", bids, asks });
+      } else {
+        console.log("Binance orderbook HTTP error:", binanceRes.status);
       }
-    } catch (e) {
-      console.log("Binance orderbook failed");
+    } catch (e: any) {
+      console.log("Binance orderbook threw:", e?.message || e);
     }
 
-    // Fallback: synthetic around current price
-    const priceRes = await fetch(
-      "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
-    );
-    const priceData: any = await priceRes.json();
-    const price = priceData.bitcoin?.usd || 85000;
+    // Fallback: synthetic around known price
+    const basePrice = symbol.startsWith("BTC") ? 85000
+      : symbol.startsWith("ETH") ? 2000
+      : symbol.startsWith("BNB") ? 580
+      : symbol.startsWith("SOL") ? 145
+      : 100;
+
     const bids: any[] = [];
     const asks: any[] = [];
     for (let i = 0; i < 10; i++) {
       bids.push({
-        price: price * (1 - (i + 1) * 0.0002),
+        price: basePrice * (1 - (i + 1) * 0.0002),
         qty: Math.random() * 2,
       });
       asks.push({
-        price: price * (1 + (i + 1) * 0.0002),
+        price: basePrice * (1 + (i + 1) * 0.0002),
         qty: Math.random() * 2,
       });
     }
     return res.json({ success: true, source: "synthetic", bids, asks });
   } catch (err: any) {
-    console.error("Orderbook error:", err);
+    console.error("Orderbook fatal error:", err?.message || err);
     return res.status(500).json({ success: false, message: "Orderbook fetch failed" });
   }
 });
