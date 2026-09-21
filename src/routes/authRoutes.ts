@@ -328,7 +328,7 @@ router.post("/bot-run", verifyFirebaseToken, async (req: Request, res: Response)
 });
 
 /* ============================================================
- *  PUBLIC MARKET DATA — charts + order book
+ *  PUBLIC MARKET DATA — charts + order book + batch prices
  *  Yahoo Finance (no geo-block). Synthetic orderbook fallback.
  * ============================================================ */
 
@@ -496,6 +496,52 @@ router.get("/orderbook/:symbol", async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error("Orderbook fatal error:", err?.message || err);
     return res.status(500).json({ success: false, message: "Orderbook fetch failed" });
+  }
+});
+
+/* ============================================================
+ *  BATCH PRICES — one call for many coins (via Yahoo)
+ * ============================================================ */
+router.get("/prices", async (req: Request, res: Response) => {
+  try {
+    const symbolsParam = (req.query.symbols as string) || "BTC,ETH,BNB,SOL";
+    const symbols = symbolsParam.split(",").map(s => s.trim().toUpperCase()).filter(Boolean);
+
+    if (symbols.length === 0) {
+      return res.status(400).json({ success: false, message: "No symbols provided" });
+    }
+
+    const priceData: Record<string, { usd: number; usd_24h_change: number }> = {};
+
+    // Fetch each symbol from Yahoo in parallel
+    const fetchPromises = symbols.map(async (sym) => {
+      try {
+        const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}-USD?interval=1m&range=1d`;
+        const yahooRes = await fetch(yahooUrl, {
+          headers: { "User-Agent": "Mozilla/5.0 (compatible; BT-EARN/1.0)" },
+        });
+        if (!yahooRes.ok) return;
+        const data: any = await yahooRes.json();
+        const meta = data?.chart?.result?.[0]?.meta;
+        if (!meta) return;
+        const price = meta.regularMarketPrice;
+        const prevClose = meta.chartPreviousClose || meta.previousClose || price;
+        const changePercent = prevClose ? ((price - prevClose) / prevClose) * 100 : 0;
+        priceData[sym] = {
+          usd: price,
+          usd_24h_change: changePercent,
+        };
+      } catch (e: any) {
+        console.log(`Yahoo price failed for ${sym}:`, e?.message || e);
+      }
+    });
+
+    await Promise.all(fetchPromises);
+
+    return res.json({ success: true, prices: priceData });
+  } catch (err: any) {
+    console.error("Batch prices error:", err?.message || err);
+    return res.status(500).json({ success: false, message: "Prices fetch failed" });
   }
 });
 
