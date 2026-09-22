@@ -55,127 +55,37 @@ function calculateProfitMediumRisk(amount: number) {
  *  Most coins use "SYMBOL-USD". Some need custom tickers.
  * ============================================================ */
 const YAHOO_TICKER_MAP: Record<string, string> = {
-  // Standard tickers (SYMBOL-USD works)
-  BTC: "BTC-USD",
-  ETH: "ETH-USD",
-  BNB: "BNB-USD",
-  SOL: "SOL-USD",
-  XRP: "XRP-USD",
-  DOGE: "DOGE-USD",
-  ADA: "ADA-USD",
-  AVAX: "AVAX-USD",
-  DOT: "DOT-USD",
-  TRX: "TRX-USD",
-  LINK: "LINK-USD",
-  MATIC: "MATIC-USD",
-  SHIB: "SHIB-USD",
-  LTC: "LTC-USD",
-  BCH: "BCH-USD",
-  NEAR: "NEAR-USD",
-  ATOM: "ATOM-USD",
-  ALGO: "ALGO-USD",
-  VET: "VET-USD",
-  FIL: "FIL-USD",
-  ICP: "ICP-USD",
-  APT: "APT-USD",
-  ARB: "ARB-USD",
-  OP: "OP-USD",
-  SUI: "SUI-USD",
-  STX: "STX-USD",
-  MKR: "MKR-USD",
-  AAVE: "AAVE-USD",
-  UNI: "UNI-USD",
-  CRV: "CRV-USD",
-  SNX: "SNX-USD",
-  COMP: "COMP-USD",
-  LDO: "LDO-USD",
-  GRT: "GRT-USD",
-  SAND: "SAND-USD",
-  MANA: "MANA-USD",
-  GALA: "GALA-USD",
-  AXS: "AXS-USD",
-  ENJ: "ENJ-USD",
-  CHZ: "CHZ-USD",
-  KAVA: "KAVA-USD",
-  ZEC: "ZEC-USD",
-  DASH: "DASH-USD",
-  XTZ: "XTZ-USD",
-  EOS: "EOS-USD",
-  NEO: "NEO-USD",
-  IOTA: "IOTA-USD",
-  XMR: "XMR-USD",
-  ETC: "ETC-USD",
-  FLOW: "FLOW-USD",
-  HBAR: "HBAR-USD",
-  KAS: "KAS-USD",
-  SEI: "SEI-USD",
-  TIA: "TIA-USD",
-  INJ: "INJ-USD",
-  RUNE: "RUNE-USD",
-  QNT: "QNT-USD",
-  FTM: "FTM-USD",
-  IMX: "IMX-USD",
-  EGLD: "EGLD-USD",
-  MINA: "MINA-USD",
-  ZIL: "ZIL-USD",
-  HOT: "HOT-USD",
-  BAT: "BAT-USD",
-  ZRX: "ZRX-USD",
-  KNC: "KNC-USD",
-  BAL: "BAL-USD",
-  YFI: "YFI-USD",
-  "1INCH": "1INCH-USD",
-  CELO: "CELO-USD",
-  ANKR: "ANKR-USD",
-  SKL: "SKL-USD",
-  COTI: "COTI-USD",
-  FET: "FET-USD",
-  OCEAN: "OCEAN-USD",
-  CFX: "CFX-USD",
-  NEXO: "NEXO-USD",
-  CRO: "CRO-USD",
-  OKB: "OKB-USD",
-  LEO: "LEO-USD",
-  CAKE: "CAKE-USD",
-  DAI: "DAI-USD",
-  TUSD: "TUSD-USD",
-  LUNC: "LUNC-USD",
-  LUNA: "LUNA-USD",
-  AMP: "AMP-USD",
-  RVN: "RVN-USD",
-  SC: "SC-USD",
-  XLM: "XLM-USD",
-  XDC: "XDC-USD",
-  DCR: "DCR-USD",
-  WAVES: "WAVES-USD",
-  ONT: "ONT-USD",
-  IOST: "IOST-USD",
-  WAXP: "WAXP-USD",
-  KDA: "KDA-USD",
-  AR: "AR-USD",
-  STORJ: "STORJ-USD",
-  DYDX: "DYDX-USD",
-  GMX: "GMX-USD",
-  WOO: "WOO-USD",
-  RPL: "RPL-USD",
-  FXS: "FXS-USD",
-  CVX: "CVX-USD",
-  ENS: "ENS-USD",
-  MASK: "MASK-USD",
-  LRC: "LRC-USD",
-  RNDR: "RNDR-USD",
-  // Custom tickers — Yahoo needs special suffix
-  PEPE: "PEPE24478-USD",
-  WIF: "WIF-USD",
-  BONK: "BONK-USD",
-  FLOKI: "FLOKI-USD",
-  TON: "TON11419-USD",
-  POL: "POL28321-USD",
+  BTC: "BTC-USD", ETH: "ETH-USD", BNB: "BNB-USD", SOL: "SOL-USD",
+  XRP: "XRP-USD", DOGE: "DOGE-USD", ADA: "ADA-USD", AVAX: "AVAX-USD",
+  DOT: "DOT-USD", TRX: "TRX-USD", LINK: "LINK-USD", MATIC: "MATIC-USD",
+  SHIB: "SHIB-USD", LTC: "LTC-USD", BCH: "BCH-USD", NEAR: "NEAR-USD",
+  ATOM: "ATOM-USD", ALGO: "ALGO-USD", VET: "VET-USD", FIL: "FIL-USD",
+  ICP: "ICP-USD", APT: "APT-USD", ARB: "ARB-USD", OP: "OP-USD",
+  SUI: "SUI-USD", STX: "STX-USD", MKR: "MKR-USD", AAVE: "AAVE-USD",
+  UNI: "UNI-USD", CRV: "CRV-USD", SNX: "SNX-USD", COMP: "COMP-USD",
+  LDO: "LDO-USD", GRT: "GRT-USD", SAND: "SAND-USD", MANA: "MANA-USD",
+  GALA: "GALA-USD", AXS: "AXS-USD", ENJ: "ENJ-USD", CHZ: "CHZ-USD",
+  KAVA: "KAVA-USD", ZEC: "ZEC-USD", DASH: "DASH-USD", XTZ: "XTZ-USD",
+  EOS: "EOS-USD", NEO: "NEO-USD", IOTA: "IOTA-USD", XMR: "XMR-USD",
+  ETC: "ETC-USD", FLOW: "FLOW-USD", HBAR: "HBAR-USD", KAS: "KAS-USD",
+  SEI: "SEI-USD", TIA: "TIA-USD", INJ: "INJ-USD", RUNE: "RUNE-USD",
+  QNT: "QNT-USD", FTM: "FTM-USD", IMX: "IMX-USD", EGLD: "EGLD-USD",
+  MINA: "MINA-USD", ZIL: "ZIL-USD", HOT: "HOT-USD", BAT: "BAT-USD",
+  ZRX: "ZRX-USD", KNC: "KNC-USD", BAL: "BAL-USD", YFI: "YFI-USD",
+  "1INCH": "1INCH-USD", CELO: "CELO-USD", ANKR: "ANKR-USD", SKL: "SKL-USD",
+  COTI: "COTI-USD", FET: "FET-USD", OCEAN: "OCEAN-USD", CFX: "CFX-USD",
+  NEXO: "NEXO-USD", CRO: "CRO-USD", OKB: "OKB-USD", LEO: "LEO-USD",
+  CAKE: "CAKE-USD", DAI: "DAI-USD", TUSD: "TUSD-USD", LUNC: "LUNC-USD",
+  LUNA: "LUNA-USD", AMP: "AMP-USD", RVN: "RVN-USD", SC: "SC-USD",
+  XLM: "XLM-USD", XDC: "XDC-USD", DCR: "DCR-USD", WAVES: "WAVES-USD",
+  ONT: "ONT-USD", IOST: "IOST-USD", WAXP: "WAXP-USD", KDA: "KDA-USD",
+  AR: "AR-USD", STORJ: "STORJ-USD", DYDX: "DYDX-USD", GMX: "GMX-USD",
+  WOO: "WOO-USD", RPL: "RPL-USD", FXS: "FXS-USD", CVX: "CVX-USD",
+  ENS: "ENS-USD", MASK: "MASK-USD", LRC: "LRC-USD", RNDR: "RNDR-USD",
+  PEPE: "PEPE24478-USD", TON: "TON11419-USD",
+  WIF: "WIF-USD", BONK: "BONK-USD", FLOKI: "FLOKI-USD",
 };
 
-/**
- * Given a base symbol (e.g. "BTC", "PEPE"), return the correct Yahoo ticker.
- */
 function getYahooTicker(baseSymbol: string): string {
   const upper = baseSymbol.toUpperCase();
   if (YAHOO_TICKER_MAP[upper]) return YAHOO_TICKER_MAP[upper];
@@ -386,7 +296,7 @@ router.post("/withdraw", verifyFirebaseToken, async (req: Request, res: Response
 
 /* ============================================================
  *  CONVERT — swap one coin to another using live Yahoo price
- *  Fee: $0.05 flat. Min: $3. Works for all coins in the map.
+ *  Fee: $0.05 flat. Min: $3.
  * ============================================================ */
 router.post("/convert", verifyFirebaseToken, async (req: Request, res: Response) => {
   try {
@@ -425,7 +335,6 @@ router.post("/convert", verifyFirebaseToken, async (req: Request, res: Response)
 
     const FEE = 0.05;
 
-    // Helper: fetch live USD price for a symbol
     async function fetchYahooPrice(sym: string): Promise<number> {
       if (sym === "USDT") return 1;
       const ticker = getYahooTicker(sym);
@@ -466,10 +375,7 @@ router.post("/convert", verifyFirebaseToken, async (req: Request, res: Response)
     const usableUsd = amt - FEE;
     const toAmount = usableUsd / toPrice;
 
-    // Deduct from source
     wallets[fromKey] = fromBalance - fromAmount;
-
-    // Add to destination
     wallets[toKey] = Number(wallets[toKey] || 0) + toAmount;
 
     const convert = {
@@ -582,11 +488,10 @@ router.post("/bot-run", verifyFirebaseToken, async (req: Request, res: Response)
 
 /* ============================================================
  *  PUBLIC MARKET DATA — charts + order book + batch prices
- *  Yahoo Finance (no geo-block). Synthetic orderbook fallback.
  * ============================================================ */
 
 const chartCache: Record<string, { data: any; time: number }> = {};
-const CACHE_TTL = 30000; // 30s
+const CACHE_TTL = 30000;
 
 router.get("/chart/:symbol", async (req: Request, res: Response) => {
   try {
@@ -600,11 +505,9 @@ router.get("/chart/:symbol", async (req: Request, res: Response) => {
       return res.json({ success: true, source: "cache", candles: cached.data });
     }
 
-    // Convert symbol like "BTCUSDT" → Yahoo ticker
     const base = symbol.replace(/USDT$/i, "").toUpperCase();
     const yahooSymbol = getYahooTicker(base);
 
-    // Yahoo Finance interval map
     const yahooInterval =
       interval === "1m" ? "1m" :
       interval === "5m" ? "5m" :
@@ -621,13 +524,10 @@ router.get("/chart/:symbol", async (req: Request, res: Response) => {
       interval === "1h" ? "1mo" :
       interval === "1D" ? "1y" : "1d";
 
-    // Try Yahoo Finance
     try {
       const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=${yahooInterval}&range=${yahooRange}`;
       const yahooRes = await fetch(yahooUrl, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (compatible; BT-EARN/1.0)",
-        },
+        headers: { "User-Agent": "Mozilla/5.0 (compatible; BT-EARN/1.0)" },
       });
       if (yahooRes.ok) {
         const yahooData: any = await yahooRes.json();
@@ -663,7 +563,6 @@ router.get("/chart/:symbol", async (req: Request, res: Response) => {
       console.log("Yahoo chart threw:", e?.message || e);
     }
 
-    // Final fallback: synthetic
     const basePrice = symbol.startsWith("BTC") ? 85000
       : symbol.startsWith("ETH") ? 2000
       : symbol.startsWith("BNB") ? 580
@@ -700,7 +599,6 @@ router.get("/orderbook/:symbol", async (req: Request, res: Response) => {
   try {
     const { symbol } = req.params;
 
-    // Try Bybit orderbook first
     try {
       const bybitUrl = `https://api.bybit.com/v5/market/orderbook?category=spot&symbol=${symbol}&limit=10`;
       const bybitRes = await fetch(bybitUrl);
@@ -726,7 +624,6 @@ router.get("/orderbook/:symbol", async (req: Request, res: Response) => {
       console.log("Bybit orderbook threw:", e?.message || e);
     }
 
-    // Synthetic orderbook fallback
     const basePrice = symbol.startsWith("BTC") ? 85000
       : symbol.startsWith("ETH") ? 2000
       : symbol.startsWith("BNB") ? 580
@@ -754,7 +651,11 @@ router.get("/orderbook/:symbol", async (req: Request, res: Response) => {
 
 /* ============================================================
  *  BATCH PRICES — one call for many coins (via Yahoo)
+ *  With 10-second cache
  * ============================================================ */
+const priceCache: { data: Record<string, any>; time: number } = { data: {}, time: 0 };
+const PRICE_CACHE_TTL = 10000;
+
 router.get("/prices", async (req: Request, res: Response) => {
   try {
     const symbolsParam = (req.query.symbols as string) || "BTC,ETH,BNB,SOL";
@@ -764,9 +665,18 @@ router.get("/prices", async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, message: "No symbols provided" });
     }
 
+    if (Date.now() - priceCache.time < PRICE_CACHE_TTL && Object.keys(priceCache.data).length > 0) {
+      const cachedSubset: Record<string, any> = {};
+      for (const sym of symbols) {
+        if (priceCache.data[sym]) cachedSubset[sym] = priceCache.data[sym];
+      }
+      if (Object.keys(cachedSubset).length > 0) {
+        return res.json({ success: true, source: "cache", prices: cachedSubset });
+      }
+    }
+
     const priceData: Record<string, { usd: number; usd_24h_change: number }> = {};
 
-    // Fetch each symbol from Yahoo in parallel
     const fetchPromises = symbols.map(async (sym) => {
       try {
         const ticker = sym === "USDT" ? "USDT-USD" : getYahooTicker(sym);
@@ -792,7 +702,10 @@ router.get("/prices", async (req: Request, res: Response) => {
 
     await Promise.all(fetchPromises);
 
-    return res.json({ success: true, prices: priceData });
+    priceCache.data = { ...priceCache.data, ...priceData };
+    priceCache.time = Date.now();
+
+    return res.json({ success: true, source: "yahoo", prices: priceData });
   } catch (err: any) {
     console.error("Batch prices error:", err?.message || err);
     return res.status(500).json({ success: false, message: "Prices fetch failed" });
