@@ -120,6 +120,7 @@ const tradeLimiter = rateLimit({
 app.use("/api/auth/register", authLimiter);
 app.use("/api/auth/login", authLimiter);
 app.use("/api/auth/withdraw", authLimiter);
+app.use("/api/auth/convert", authLimiter);
 app.use("/api/auth/bot-trade", tradeLimiter);
 
 /* ============================================================
