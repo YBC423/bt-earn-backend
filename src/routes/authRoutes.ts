@@ -51,6 +51,138 @@ function calculateProfitMediumRisk(amount: number) {
 }
 
 /* ============================================================
+ *  YAHOO TICKER MAP
+ *  Most coins use "SYMBOL-USD". Some need custom tickers.
+ * ============================================================ */
+const YAHOO_TICKER_MAP: Record<string, string> = {
+  // Standard tickers (SYMBOL-USD works)
+  BTC: "BTC-USD",
+  ETH: "ETH-USD",
+  BNB: "BNB-USD",
+  SOL: "SOL-USD",
+  XRP: "XRP-USD",
+  DOGE: "DOGE-USD",
+  ADA: "ADA-USD",
+  AVAX: "AVAX-USD",
+  DOT: "DOT-USD",
+  TRX: "TRX-USD",
+  LINK: "LINK-USD",
+  MATIC: "MATIC-USD",
+  SHIB: "SHIB-USD",
+  LTC: "LTC-USD",
+  BCH: "BCH-USD",
+  NEAR: "NEAR-USD",
+  ATOM: "ATOM-USD",
+  ALGO: "ALGO-USD",
+  VET: "VET-USD",
+  FIL: "FIL-USD",
+  ICP: "ICP-USD",
+  APT: "APT-USD",
+  ARB: "ARB-USD",
+  OP: "OP-USD",
+  SUI: "SUI-USD",
+  STX: "STX-USD",
+  MKR: "MKR-USD",
+  AAVE: "AAVE-USD",
+  UNI: "UNI-USD",
+  CRV: "CRV-USD",
+  SNX: "SNX-USD",
+  COMP: "COMP-USD",
+  LDO: "LDO-USD",
+  GRT: "GRT-USD",
+  SAND: "SAND-USD",
+  MANA: "MANA-USD",
+  GALA: "GALA-USD",
+  AXS: "AXS-USD",
+  ENJ: "ENJ-USD",
+  CHZ: "CHZ-USD",
+  KAVA: "KAVA-USD",
+  ZEC: "ZEC-USD",
+  DASH: "DASH-USD",
+  XTZ: "XTZ-USD",
+  EOS: "EOS-USD",
+  NEO: "NEO-USD",
+  IOTA: "IOTA-USD",
+  XMR: "XMR-USD",
+  ETC: "ETC-USD",
+  FLOW: "FLOW-USD",
+  HBAR: "HBAR-USD",
+  KAS: "KAS-USD",
+  SEI: "SEI-USD",
+  TIA: "TIA-USD",
+  INJ: "INJ-USD",
+  RUNE: "RUNE-USD",
+  QNT: "QNT-USD",
+  FTM: "FTM-USD",
+  IMX: "IMX-USD",
+  EGLD: "EGLD-USD",
+  MINA: "MINA-USD",
+  ZIL: "ZIL-USD",
+  HOT: "HOT-USD",
+  BAT: "BAT-USD",
+  ZRX: "ZRX-USD",
+  KNC: "KNC-USD",
+  BAL: "BAL-USD",
+  YFI: "YFI-USD",
+  "1INCH": "1INCH-USD",
+  CELO: "CELO-USD",
+  ANKR: "ANKR-USD",
+  SKL: "SKL-USD",
+  COTI: "COTI-USD",
+  FET: "FET-USD",
+  OCEAN: "OCEAN-USD",
+  CFX: "CFX-USD",
+  NEXO: "NEXO-USD",
+  CRO: "CRO-USD",
+  OKB: "OKB-USD",
+  LEO: "LEO-USD",
+  CAKE: "CAKE-USD",
+  DAI: "DAI-USD",
+  TUSD: "TUSD-USD",
+  LUNC: "LUNC-USD",
+  LUNA: "LUNA-USD",
+  AMP: "AMP-USD",
+  RVN: "RVN-USD",
+  SC: "SC-USD",
+  XLM: "XLM-USD",
+  XDC: "XDC-USD",
+  DCR: "DCR-USD",
+  WAVES: "WAVES-USD",
+  ONT: "ONT-USD",
+  IOST: "IOST-USD",
+  WAXP: "WAXP-USD",
+  KDA: "KDA-USD",
+  AR: "AR-USD",
+  STORJ: "STORJ-USD",
+  DYDX: "DYDX-USD",
+  GMX: "GMX-USD",
+  WOO: "WOO-USD",
+  RPL: "RPL-USD",
+  FXS: "FXS-USD",
+  CVX: "CVX-USD",
+  ENS: "ENS-USD",
+  MASK: "MASK-USD",
+  LRC: "LRC-USD",
+  RNDR: "RNDR-USD",
+  // Custom tickers — Yahoo needs special suffix
+  PEPE: "PEPE24478-USD",
+  WIF: "WIF-USD",
+  BONK: "BONK-USD",
+  FLOKI: "FLOKI-USD",
+  TON: "TON11419-USD",
+  POL: "POL28321-USD",
+};
+
+/**
+ * Given a base symbol (e.g. "BTC", "PEPE"), return the correct Yahoo ticker.
+ */
+function getYahooTicker(baseSymbol: string): string {
+  const upper = baseSymbol.toUpperCase();
+  if (YAHOO_TICKER_MAP[upper]) return YAHOO_TICKER_MAP[upper];
+  return `${upper}-USD`;
+}
+
+/* ============================================================
  *  AUTH ROUTES
  * ============================================================ */
 
@@ -94,6 +226,7 @@ router.post("/register", async (req: Request, res: Response) => {
       wallets: { usdt: 0, btc: 0, eth: 0, ngn: 0 },
       deposits: [],
       withdrawals: [],
+      converts: [],
       trades: [],
       tradeBots: [],
       loginHistory: [],
@@ -252,6 +385,126 @@ router.post("/withdraw", verifyFirebaseToken, async (req: Request, res: Response
 });
 
 /* ============================================================
+ *  CONVERT — swap one coin to another using live Yahoo price
+ *  Fee: $0.05 flat. Min: $3. Works for all coins in the map.
+ * ============================================================ */
+router.post("/convert", verifyFirebaseToken, async (req: Request, res: Response) => {
+  try {
+    const firebaseUid = req.verifiedFirebaseUid!;
+    const { fromSymbol, toSymbol, usdAmount } = req.body || {};
+
+    if (!fromSymbol || !toSymbol || !usdAmount) {
+      return res.status(400).json({
+        success: false,
+        message: "fromSymbol, toSymbol, and usdAmount are required",
+      });
+    }
+
+    const from = String(fromSymbol).toUpperCase().trim();
+    const to = String(toSymbol).toUpperCase().trim();
+    const amt = Number(usdAmount);
+
+    if (from === to) {
+      return res.status(400).json({
+        success: false,
+        message: "From and To must be different",
+      });
+    }
+
+    if (isNaN(amt) || amt < 3) {
+      return res.status(400).json({
+        success: false,
+        message: "Minimum convert is $3",
+      });
+    }
+
+    const user = await User.findOne({ firebaseUid });
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    const FEE = 0.05;
+
+    // Helper: fetch live USD price for a symbol
+    async function fetchYahooPrice(sym: string): Promise<number> {
+      if (sym === "USDT") return 1;
+      const ticker = getYahooTicker(sym);
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1m&range=1d`;
+      const r = await fetch(url, {
+        headers: { "User-Agent": "Mozilla/5.0 (compatible; BT-EARN/1.0)" },
+      });
+      if (!r.ok) return 0;
+      const data: any = await r.json();
+      const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
+      return Number(price) || 0;
+    }
+
+    const fromPrice = await fetchYahooPrice(from);
+    const toPrice = await fetchYahooPrice(to);
+
+    if (!fromPrice || !toPrice) {
+      return res.status(400).json({
+        success: false,
+        message: `Price unavailable for ${!fromPrice ? from : to}`,
+      });
+    }
+
+    const wallets: any = user.wallets || {};
+    const fromKey = from === "USDT" ? "usdt" : from.toLowerCase();
+    const toKey = to === "USDT" ? "usdt" : to.toLowerCase();
+
+    const fromBalance = Number(wallets[fromKey] || 0);
+    const fromAmount = amt / fromPrice;
+
+    if (fromBalance < fromAmount) {
+      return res.status(400).json({
+        success: false,
+        message: `Insufficient ${from} balance. You have ${fromBalance} ${from}.`,
+      });
+    }
+
+    const usableUsd = amt - FEE;
+    const toAmount = usableUsd / toPrice;
+
+    // Deduct from source
+    wallets[fromKey] = fromBalance - fromAmount;
+
+    // Add to destination
+    wallets[toKey] = Number(wallets[toKey] || 0) + toAmount;
+
+    const convert = {
+      id: Date.now(),
+      fromSymbol: from,
+      toSymbol: to,
+      fromAmount: Number(fromAmount.toFixed(8)),
+      toAmount: Number(toAmount.toFixed(8)),
+      usdValue: Number(amt.toFixed(2)),
+      fee: FEE,
+      dateTime: new Date().toLocaleString(),
+    };
+
+    user.wallets = wallets;
+    user.markModified("wallets");
+    if (!user.converts) user.converts = [];
+    user.converts.push(convert);
+    await user.save();
+
+    return res.json({
+      success: true,
+      message: "Convert successful",
+      convert,
+      wallets: user.wallets,
+    });
+  } catch (err: any) {
+    console.error("Convert error:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Server error during convert",
+    });
+  }
+});
+
+/* ============================================================
  *  BOT RUN — Server-side simulated profit
  * ============================================================ */
 router.post("/bot-run", verifyFirebaseToken, async (req: Request, res: Response) => {
@@ -347,9 +600,9 @@ router.get("/chart/:symbol", async (req: Request, res: Response) => {
       return res.json({ success: true, source: "cache", candles: cached.data });
     }
 
-    // Convert symbol like "BTCUSDT" → "BTC-USD"
+    // Convert symbol like "BTCUSDT" → Yahoo ticker
     const base = symbol.replace(/USDT$/i, "").toUpperCase();
-    const yahooSymbol = `${base}-USD`;
+    const yahooSymbol = getYahooTicker(base);
 
     // Yahoo Finance interval map
     const yahooInterval =
@@ -516,7 +769,8 @@ router.get("/prices", async (req: Request, res: Response) => {
     // Fetch each symbol from Yahoo in parallel
     const fetchPromises = symbols.map(async (sym) => {
       try {
-        const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}-USD?interval=1m&range=1d`;
+        const ticker = sym === "USDT" ? "USDT-USD" : getYahooTicker(sym);
+        const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1m&range=1d`;
         const yahooRes = await fetch(yahooUrl, {
           headers: { "User-Agent": "Mozilla/5.0 (compatible; BT-EARN/1.0)" },
         });
