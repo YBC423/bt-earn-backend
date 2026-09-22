@@ -13,6 +13,7 @@ export interface IUser extends Document {
     btc: number;
     eth: number;
     ngn: number;
+    [key: string]: number;
   };
 
   deposits: Array<{
@@ -35,6 +36,17 @@ export interface IUser extends Document {
     txId: string;
     fee: number;
     status: string;
+    dateTime: string;
+  }>;
+
+  converts: Array<{
+    id: number;
+    fromSymbol: string;
+    toSymbol: string;
+    fromAmount: number;
+    toAmount: number;
+    usdValue: number;
+    fee: number;
     dateTime: string;
   }>;
 
@@ -91,10 +103,8 @@ const UserSchema = new Schema<IUser>(
     balance: { type: Number, default: 0 },
 
     wallets: {
-      usdt: { type: Number, default: 0 },
-      btc: { type: Number, default: 0 },
-      eth: { type: Number, default: 0 },
-      ngn: { type: Number, default: 0 },
+      type: Schema.Types.Mixed,
+      default: { usdt: 0, btc: 0, eth: 0, ngn: 0 },
     },
 
     deposits: [
@@ -120,6 +130,19 @@ const UserSchema = new Schema<IUser>(
         txId: String,
         fee: Number,
         status: { type: String, default: "Pending" },
+        dateTime: String,
+      },
+    ],
+
+    converts: [
+      {
+        id: Number,
+        fromSymbol: String,
+        toSymbol: String,
+        fromAmount: Number,
+        toAmount: Number,
+        usdValue: Number,
+        fee: Number,
         dateTime: String,
       },
     ],
