@@ -487,6 +487,36 @@ router.post("/bot-run", verifyFirebaseToken, async (req: Request, res: Response)
 });
 
 /* ============================================================
+ *  BOT ACCESS CODE VERIFICATION
+ *  Code stored in BOT_ACCESS_CODE env var on Render.
+ *  Requires Firebase auth so randoms can't brute-force it.
+ * ============================================================ */
+router.post("/verify-bot-access", verifyFirebaseToken, async (req: Request, res: Response) => {
+  try {
+    const { code } = req.body || {};
+    const BOT_ACCESS_CODE = process.env.BOT_ACCESS_CODE;
+
+    if (!BOT_ACCESS_CODE) {
+      console.error("BOT_ACCESS_CODE env var is not set");
+      return res.status(500).json({ success: false, message: "Server misconfigured" });
+    }
+
+    if (!code || typeof code !== "string") {
+      return res.status(400).json({ success: false, message: "Code required" });
+    }
+
+    if (code.trim() === BOT_ACCESS_CODE) {
+      return res.json({ success: true });
+    }
+
+    return res.status(401).json({ success: false, message: "Invalid code" });
+  } catch (err: any) {
+    console.error("Verify bot access error:", err);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+/* ============================================================
  *  PUBLIC MARKET DATA — charts + order book + batch prices
  * ============================================================ */
 
