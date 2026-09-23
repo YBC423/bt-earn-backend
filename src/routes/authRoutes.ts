@@ -324,7 +324,7 @@ router.post("/convert", verifyFirebaseToken, async (req: Request, res: Response)
     if (isNaN(amt) || amt < 3) {
       return res.status(400).json({
         success: false,
-        message: "Minimum convert is $3",
+        message: "Minimum convert is $1",
       });
     }
 
