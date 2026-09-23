@@ -296,7 +296,7 @@ router.post("/withdraw", verifyFirebaseToken, async (req: Request, res: Response
 
 /* ============================================================
  *  CONVERT — swap one coin to another using live Yahoo price
- *  Fee: $0.05 flat. Min: $3.
+ *  Fee: $0.05 flat. Min: $1.
  * ============================================================ */
 router.post("/convert", verifyFirebaseToken, async (req: Request, res: Response) => {
   try {
