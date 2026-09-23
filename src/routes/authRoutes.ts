@@ -1,9 +1,46 @@
 import { Router, Request, Response } from "express";
+import crypto from "crypto";
 import User from "../models/User";
 import { verifyFirebaseToken } from "../middlewares/authMiddleware";
 import fetch from "node-fetch";
 
 const router = Router();
+
+/* ============================================================
+ *  BOT ACCESS TOKEN STORE
+ *  Tokens expire after 20 minutes. Stored in memory (resets on redeploy).
+ * ============================================================ */
+const botAccessTokens = new Map<string, { firebaseUid: string; expiresAt: number }>();
+const BOT_TOKEN_TTL_MS = 20 * 60 * 1000; // 20 minutes
+
+function createBotAccessToken(firebaseUid: string): string {
+  const token = crypto.randomBytes(32).toString("hex");
+  botAccessTokens.set(token, {
+    firebaseUid,
+    expiresAt: Date.now() + BOT_TOKEN_TTL_MS,
+  });
+  return token;
+}
+
+function isValidBotAccessToken(token: string, firebaseUid: string): boolean {
+  if (!token) return false;
+  const entry = botAccessTokens.get(token);
+  if (!entry) return false;
+  if (entry.firebaseUid !== firebaseUid) return false;
+  if (Date.now() > entry.expiresAt) {
+    botAccessTokens.delete(token);
+    return false;
+  }
+  return true;
+}
+
+// Cleanup expired tokens every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [token, entry] of botAccessTokens.entries()) {
+    if (now > entry.expiresAt) botAccessTokens.delete(token);
+  }
+}, 5 * 60 * 1000);
 
 /* ============================================================
  *  BOT PROFIT CALCULATION (server-side, trusted)
@@ -52,7 +89,6 @@ function calculateProfitMediumRisk(amount: number) {
 
 /* ============================================================
  *  YAHOO TICKER MAP
- *  Most coins use "SYMBOL-USD". Some need custom tickers.
  * ============================================================ */
 const YAHOO_TICKER_MAP: Record<string, string> = {
   BTC: "BTC-USD", ETH: "ETH-USD", BNB: "BNB-USD", SOL: "SOL-USD",
@@ -412,10 +448,16 @@ router.post("/convert", verifyFirebaseToken, async (req: Request, res: Response)
 
 /* ============================================================
  *  BOT RUN — Server-side simulated profit
+ *  Locked behind bot access token (20 min TTL)
  * ============================================================ */
 router.post("/bot-run", verifyFirebaseToken, async (req: Request, res: Response) => {
   try {
     const firebaseUid = req.verifiedFirebaseUid!;
+    const botToken = req.headers["x-bot-access-token"] as string;
+    if (!isValidBotAccessToken(botToken, firebaseUid)) {
+      return res.status(403).json({ success: false, message: "Bot access required" });
+    }
+
     const { botName, asset, amountPerTrade } = req.body || {};
 
     if (!botName || !amountPerTrade) {
@@ -488,11 +530,12 @@ router.post("/bot-run", verifyFirebaseToken, async (req: Request, res: Response)
 
 /* ============================================================
  *  BOT ACCESS CODE VERIFICATION
- *  Code stored in BOT_ACCESS_CODE env var on Render.
- *  Requires Firebase auth so randoms can't brute-force it.
+ *  Returns a token valid for 20 minutes. Code stored in
+ *  BOT_ACCESS_CODE env var on Render.
  * ============================================================ */
 router.post("/verify-bot-access", verifyFirebaseToken, async (req: Request, res: Response) => {
   try {
+    const firebaseUid = req.verifiedFirebaseUid!;
     const { code } = req.body || {};
     const BOT_ACCESS_CODE = process.env.BOT_ACCESS_CODE;
 
@@ -505,11 +548,12 @@ router.post("/verify-bot-access", verifyFirebaseToken, async (req: Request, res:
       return res.status(400).json({ success: false, message: "Code required" });
     }
 
-    if (code.trim() === BOT_ACCESS_CODE) {
-      return res.json({ success: true });
+    if (code.trim() !== BOT_ACCESS_CODE) {
+      return res.status(401).json({ success: false, message: "Invalid code" });
     }
 
-    return res.status(401).json({ success: false, message: "Invalid code" });
+    const token = createBotAccessToken(firebaseUid);
+    return res.json({ success: true, token });
   } catch (err: any) {
     console.error("Verify bot access error:", err);
     return res.status(500).json({ success: false, message: "Server error" });
