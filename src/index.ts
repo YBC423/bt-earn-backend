@@ -85,7 +85,9 @@ app.use(
       if (allowedOrigins.includes(origin)) return callback(null, true);
       if (/^https:\/\/[a-z0-9-]+\.github\.io$/i.test(origin)) {
         return callback(null, true);
-      }
+      if (/^https:\/\/[a-z0-9-]+\.vercel\.app$/i.test(origin)) {
+  return callback(null, true);
+}
       return callback(new Error(`CORS blocked for origin: ${origin}`));
     },
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
