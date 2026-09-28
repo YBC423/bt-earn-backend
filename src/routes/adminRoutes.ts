@@ -56,8 +56,8 @@ function toCsv(rows: any[], headers: string[]): string {
 }
 
 /**
- * Fetch a set of firebaseUids that have verified emails.
- * Uses Firebase Admin SDK in chunks of 100 (batch limit).
+ * Batch-check which firebaseUids have emailVerified === true.
+ * Uses Firebase Admin SDK (100 at a time).
  */
 async function getVerifiedUids(uids: string[]): Promise<Set<string>> {
   const verified = new Set<string>();
@@ -96,19 +96,12 @@ router.get("/me", (req: Request, res: Response) => {
  * ============================================================ */
 router.get("/stats", async (_req: Request, res: Response) => {
   try {
-    // 1. List all users in MongoDB
-    const allUsers = await User.find({})
-      .select("firebaseUid")
-      .lean();
-
+    const allUsers = await User.find({}).select("firebaseUid").lean();
     const uids = allUsers.map((u: any) => u.firebaseUid).filter(Boolean);
     const verifiedSet = await getVerifiedUids(uids);
-
-    // 2. Count only verified
     const verifiedUids = Array.from(verifiedSet);
     const verifiedCount = verifiedUids.length;
 
-    // 3. Aggregate stats over verified users only
     const balanceAgg = await User.aggregate([
       { $match: { firebaseUid: { $in: verifiedUids } } },
       {
@@ -218,8 +211,7 @@ router.get("/stats", async (_req: Request, res: Response) => {
 });
 
 /* ============================================================
- *  GET /api/admin/users — list + search + pagination
- *  Only VERIFIED Firebase users are shown.
+ *  GET /api/admin/users — verified only, search + paginate
  * ============================================================ */
 router.get("/users", async (req: Request, res: Response) => {
   try {
@@ -238,7 +230,6 @@ router.get("/users", async (req: Request, res: Response) => {
     }
     if (status !== "all") filter.status = status;
 
-    // Pull all candidate users then filter by verified in memory
     const allCandidates = await User.find(filter)
       .sort({ createdAt: -1 })
       .select("name email country status firebaseUid wallets balance totalProfit createdAt lastLogin")
@@ -280,36 +271,44 @@ router.get("/users/export", async (_req: Request, res: Response) => {
     const verifiedSet = await getVerifiedUids(uids);
     const verified = all.filter((u: any) => verifiedSet.has(u.firebaseUid));
 
-    const rows = verified.map((u: any) => ({
-      name: u.name,
-      email: u.email,
-      country: u.country,
-      status: u.status,
-      firebaseUid: u.firebaseUid,
-      usdt: u.wallets?.usdt || 0,
-      btc: u.wallets?.btc || 0,
-      eth: u.wallets?.eth || 0,
-      ngn: u.wallets?.ngn || 0,
-      balance: u.balance || 0,
-      totalProfit: u.totalProfit || 0,
-      createdAt: u.createdAt,
-    }));
+    // Dynamically collect all wallet field names
+    const walletKeys = new Set<string>();
+    for (const u of verified) {
+      const w = (u as any).wallets || {};
+      Object.keys(w).forEach((k) => walletKeys.add(k));
+    }
+    const walletHeaders = Array.from(walletKeys);
 
-    const csv = toCsv(rows, [
+    const rows = verified.map((u: any) => {
+      const base: any = {
+        name: u.name,
+        email: u.email,
+        country: u.country,
+        status: u.status,
+        firebaseUid: u.firebaseUid,
+      };
+      for (const k of walletHeaders) {
+        base[`wallet_${k}`] = (u.wallets && u.wallets[k]) || 0;
+      }
+      base.balance = u.balance || 0;
+      base.totalProfit = u.totalProfit || 0;
+      base.createdAt = u.createdAt;
+      return base;
+    });
+
+    const headers = [
       "name",
       "email",
       "country",
       "status",
       "firebaseUid",
-      "usdt",
-      "btc",
-      "eth",
-      "ngn",
+      ...walletHeaders.map((k) => `wallet_${k}`),
       "balance",
       "totalProfit",
       "createdAt",
-    ]);
+    ];
 
+    const csv = toCsv(rows, headers);
     res.setHeader("Content-Type", "text/csv");
     res.setHeader(
       "Content-Disposition",
@@ -323,11 +322,10 @@ router.get("/users/export", async (_req: Request, res: Response) => {
 });
 
 /* ============================================================
- *  GET /api/admin/users/:uid — full detail (verify Firebase)
+ *  GET /api/admin/users/:uid — full user detail (verified only)
  * ============================================================ */
 router.get("/users/:uid", async (req: Request, res: Response) => {
   try {
-    // Verify this Firebase user is verified
     try {
       const fbUser = await admin.auth().getUser(req.params.uid);
       if (!fbUser.emailVerified) {
@@ -354,120 +352,22 @@ router.get("/users/:uid", async (req: Request, res: Response) => {
 });
 
 /* ============================================================
- *  POST /api/admin/users/:uid/credit — credit USDT (safe)
- * ============================================================ */
-router.post("/users/:uid/credit", async (req: Request, res: Response) => {
-  try {
-    const { amount, reason } = req.body || {};
-    const amt = Number(amount);
-    if (!amt || isNaN(amt) || amt <= 0) {
-      return res.status(400).json({ success: false, message: "Valid positive amount required" });
-    }
-
-    const user = await User.findOne({ firebaseUid: req.params.uid });
-    if (!user) return res.status(404).json({ success: false, message: "User not found" });
-
-    // Safe read-modify-write
-    const wallets: any = user.wallets || {};
-    const before = Number(wallets.usdt || 0);
-    const after = before + amt;
-    wallets.usdt = after;
-
-    const balanceBefore = Number(user.balance || 0);
-    const balanceAfter = balanceBefore + amt;
-
-    user.wallets = wallets;
-    user.balance = balanceAfter;
-    user.markModified("wallets");
-    await user.save();
-
-    await writeLog(req, "CREDIT_USDT", "user", {
-      targetId: req.params.uid,
-      targetEmail: user.email,
-      amount: amt,
-      asset: "USDT",
-      reason: reason || "",
-      metadata: { walletBefore: before, walletAfter: after, balanceBefore, balanceAfter },
-    });
-
-    return res.json({
-      success: true,
-      message: `Credited $${amt.toFixed(2)} USDT`,
-      newBalance: after,
-    });
-  } catch (err: any) {
-    console.error("Credit error:", err);
-    return res.status(500).json({ success: false, message: "Credit failed" });
-  }
-});
-
-/* ============================================================
- *  POST /api/admin/users/:uid/debit — debit USDT (safe)
- * ============================================================ */
-router.post("/users/:uid/debit", async (req: Request, res: Response) => {
-  try {
-    const { amount, reason } = req.body || {};
-    const amt = Number(amount);
-    if (!amt || isNaN(amt) || amt <= 0) {
-      return res.status(400).json({ success: false, message: "Valid positive amount required" });
-    }
-
-    const user = await User.findOne({ firebaseUid: req.params.uid });
-    if (!user) return res.status(404).json({ success: false, message: "User not found" });
-
-    const wallets: any = user.wallets || {};
-    const before = Number(wallets.usdt || 0);
-    if (before < amt) {
-      return res.status(400).json({
-        success: false,
-        message: `Insufficient balance. User has $${before.toFixed(2)} USDT.`,
-      });
-    }
-    const after = before - amt;
-    wallets.usdt = after;
-
-    const balanceBefore = Number(user.balance || 0);
-    const balanceAfter = Math.max(0, balanceBefore - amt);
-
-    user.wallets = wallets;
-    user.balance = balanceAfter;
-    user.markModified("wallets");
-    await user.save();
-
-    await writeLog(req, "DEBIT_USDT", "user", {
-      targetId: req.params.uid,
-      targetEmail: user.email,
-      amount: amt,
-      asset: "USDT",
-      reason: reason || "",
-      metadata: { walletBefore: before, walletAfter: after, balanceBefore, balanceAfter },
-    });
-
-    return res.json({
-      success: true,
-      message: `Debited $${amt.toFixed(2)} USDT`,
-      newBalance: after,
-    });
-  } catch (err: any) {
-    console.error("Debit error:", err);
-    return res.status(500).json({ success: false, message: "Debit failed" });
-  }
-});
-
-/* ============================================================
- *  POST /api/admin/users/:uid/wallet — set any wallet field directly
- *  Body: { field: "usdt" | "btc" | "eth" | "ngn" | custom, value, reason }
- *  Gives you MongoDB-level control from the admin panel.
+ *  POST /api/admin/users/:uid/wallet
+ *  Body: { field, action: "credit" | "debit" | "set", amount, reason }
+ *  Also mirrors balance when field === "usdt"
  * ============================================================ */
 router.post("/users/:uid/wallet", async (req: Request, res: Response) => {
   try {
-    const { field, value, reason } = req.body || {};
+    const { field, action, amount, reason } = req.body || {};
     if (!field || typeof field !== "string") {
       return res.status(400).json({ success: false, message: "field is required" });
     }
-    const num = Number(value);
-    if (isNaN(num) || num < 0) {
-      return res.status(400).json({ success: false, message: "value must be a non-negative number" });
+    if (!["credit", "debit", "set"].includes(action)) {
+      return res.status(400).json({ success: false, message: "action must be credit|debit|set" });
+    }
+    const amt = Number(amount);
+    if (isNaN(amt) || amt < 0) {
+      return res.status(400).json({ success: false, message: "amount must be a non-negative number" });
     }
 
     const user = await User.findOne({ firebaseUid: req.params.uid });
@@ -475,29 +375,64 @@ router.post("/users/:uid/wallet", async (req: Request, res: Response) => {
 
     const wallets: any = user.wallets || {};
     const before = Number(wallets[field] || 0);
-    wallets[field] = num;
 
+    let after = before;
+    if (action === "credit") after = before + amt;
+    else if (action === "debit") {
+      if (before < amt) {
+        return res.status(400).json({
+          success: false,
+          message: `Insufficient ${field.toUpperCase()}. User has ${before}.`,
+        });
+      }
+      after = before - amt;
+    } else if (action === "set") {
+      after = amt;
+    }
+
+    wallets[field] = after;
     user.wallets = wallets;
     user.markModified("wallets");
+
+    // Mirror balance when field is USDT
+    const balanceBefore = Number(user.balance || 0);
+    let balanceAfter = balanceBefore;
+    if (field === "usdt") {
+      if (action === "credit") balanceAfter = balanceBefore + amt;
+      else if (action === "debit") balanceAfter = Math.max(0, balanceBefore - amt);
+      else if (action === "set") balanceAfter = amt;
+      user.balance = balanceAfter;
+    }
+
     await user.save();
 
-    await writeLog(req, "SET_WALLET", "user", {
+    const actionLabel = action === "credit" ? "CREDIT_WALLET" : action === "debit" ? "DEBIT_WALLET" : "SET_WALLET";
+
+    await writeLog(req, actionLabel, "user", {
       targetId: req.params.uid,
       targetEmail: user.email,
-      amount: num,
+      amount: amt,
       asset: field.toUpperCase(),
       reason: reason || "",
-      metadata: { field, before, after: num },
+      metadata: {
+        field,
+        action,
+        before,
+        after,
+        balanceBefore,
+        balanceAfter: field === "usdt" ? balanceAfter : undefined,
+      },
     });
 
     return res.json({
       success: true,
-      message: `Set ${field.toUpperCase()} balance to ${num}`,
+      message: `${action.toUpperCase()} ${field.toUpperCase()} — new value: ${after}`,
       wallet: user.wallets,
+      balance: user.balance,
     });
   } catch (err: any) {
-    console.error("Set wallet error:", err);
-    return res.status(500).json({ success: false, message: "Set wallet failed" });
+    console.error("Wallet action error:", err);
+    return res.status(500).json({ success: false, message: "Wallet action failed" });
   }
 });
 
@@ -510,10 +445,10 @@ router.post("/users/:uid/status", async (req: Request, res: Response) => {
     if (status !== "active" && status !== "banned") {
       return res.status(400).json({ success: false, message: "status must be 'active' or 'banned'" });
     }
-
     const user = await User.findOne({ firebaseUid: req.params.uid });
     if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
+    const previous = user.status;
     user.status = status;
     await user.save();
 
@@ -521,7 +456,7 @@ router.post("/users/:uid/status", async (req: Request, res: Response) => {
       targetId: req.params.uid,
       targetEmail: user.email,
       reason: reason || "",
-      metadata: { previousStatus: user.status, newStatus: status },
+      metadata: { previousStatus: previous, newStatus: status },
     });
 
     return res.json({ success: true, message: `User status set to ${status}` });
@@ -532,7 +467,7 @@ router.post("/users/:uid/status", async (req: Request, res: Response) => {
 });
 
 /* ============================================================
- *  DEPOSITS list
+ *  GET /api/admin/deposits
  * ============================================================ */
 router.get("/deposits", async (req: Request, res: Response) => {
   try {
@@ -562,7 +497,6 @@ router.get("/deposits", async (req: Request, res: Response) => {
     if (status !== "all") pipeline.push({ $match: { status } });
     pipeline.push({ $sort: { id: -1 } });
 
-    // Filter to verified users only
     const raw = await User.aggregate(pipeline);
     const uids = Array.from(new Set(raw.map((r: any) => r.firebaseUid).filter(Boolean)));
     const verifiedSet = await getVerifiedUids(uids);
@@ -588,6 +522,7 @@ router.get("/deposits", async (req: Request, res: Response) => {
 
 /* ============================================================
  *  POST /api/admin/deposits/:uid/:depositId/approve
+ *  Auto-credits amount to wallets.usdt AND balance (always USDT)
  * ============================================================ */
 router.post("/deposits/:uid/:depositId/approve", async (req: Request, res: Response) => {
   try {
@@ -600,20 +535,26 @@ router.post("/deposits/:uid/:depositId/approve", async (req: Request, res: Respo
 
     if (deposit.status === "Approved")
       return res.status(400).json({ success: false, message: "Deposit already approved" });
+    if (deposit.status === "Rejected")
+      return res.status(400).json({ success: false, message: "Deposit was rejected — cannot approve" });
 
     const amt = Number(deposit.amount || 0);
 
+    // 1. Mark deposit as Approved
     deposit.status = "Approved";
     user.markModified("deposits");
 
+    // 2. Credit USDT wallet + balance
     const wallets: any = user.wallets || {};
-    const before = Number(wallets.usdt || 0);
-    const after = before + amt;
-    wallets.usdt = after;
+    const walletBefore = Number(wallets.usdt || 0);
+    const walletAfter = walletBefore + amt;
+    wallets.usdt = walletAfter;
     user.wallets = wallets;
     user.markModified("wallets");
 
-    user.balance = Number(user.balance || 0) + amt;
+    const balanceBefore = Number(user.balance || 0);
+    const balanceAfter = balanceBefore + amt;
+    user.balance = balanceAfter;
 
     await user.save();
 
@@ -621,15 +562,24 @@ router.post("/deposits/:uid/:depositId/approve", async (req: Request, res: Respo
       targetId: String(depositId),
       targetEmail: user.email,
       amount: amt,
-      asset: deposit.asset,
+      asset: "USDT",
       reason: (req.body?.reason as string) || "",
-      metadata: { depositId, txId: deposit.txId, walletBefore: before, walletAfter: after },
+      metadata: {
+        depositId,
+        txId: deposit.txId,
+        originalAsset: deposit.asset,
+        walletBefore,
+        walletAfter,
+        balanceBefore,
+        balanceAfter,
+      },
     });
 
     return res.json({
       success: true,
-      message: `Deposit approved. $${amt.toFixed(2)} credited.`,
-      newBalance: after,
+      message: `Deposit approved. $${amt.toFixed(2)} credited as USDT.`,
+      newUsdt: walletAfter,
+      newBalance: balanceAfter,
     });
   } catch (err: any) {
     console.error("Approve deposit error:", err);
@@ -651,6 +601,8 @@ router.post("/deposits/:uid/:depositId/reject", async (req: Request, res: Respon
 
     if (deposit.status === "Rejected")
       return res.status(400).json({ success: false, message: "Deposit already rejected" });
+    if (deposit.status === "Approved")
+      return res.status(400).json({ success: false, message: "Deposit was approved — cannot reject" });
 
     deposit.status = "Rejected";
     user.markModified("deposits");
@@ -673,7 +625,7 @@ router.post("/deposits/:uid/:depositId/reject", async (req: Request, res: Respon
 });
 
 /* ============================================================
- *  WITHDRAWALS list
+ *  GET /api/admin/withdrawals
  * ============================================================ */
 router.get("/withdrawals", async (req: Request, res: Response) => {
   try {
@@ -729,6 +681,7 @@ router.get("/withdrawals", async (req: Request, res: Response) => {
 
 /* ============================================================
  *  POST /api/admin/withdrawals/:uid/:withdrawalId/approve
+ *  No balance change — money was already deducted on request
  * ============================================================ */
 router.post("/withdrawals/:uid/:withdrawalId/approve", async (req: Request, res: Response) => {
   try {
@@ -741,6 +694,8 @@ router.post("/withdrawals/:uid/:withdrawalId/approve", async (req: Request, res:
 
     if (w.status === "Approved")
       return res.status(400).json({ success: false, message: "Withdrawal already approved" });
+    if (w.status === "Rejected")
+      return res.status(400).json({ success: false, message: "Withdrawal was rejected — cannot approve" });
 
     w.status = "Approved";
     user.markModified("withdrawals");
@@ -764,7 +719,7 @@ router.post("/withdrawals/:uid/:withdrawalId/approve", async (req: Request, res:
 
 /* ============================================================
  *  POST /api/admin/withdrawals/:uid/:withdrawalId/reject
- *  Refunds the USDT back to user's wallet.
+ *  Refunds usdt wallet + balance
  * ============================================================ */
 router.post("/withdrawals/:uid/:withdrawalId/reject", async (req: Request, res: Response) => {
   try {
@@ -777,6 +732,8 @@ router.post("/withdrawals/:uid/:withdrawalId/reject", async (req: Request, res: 
 
     if (w.status === "Rejected")
       return res.status(400).json({ success: false, message: "Withdrawal already rejected" });
+    if (w.status === "Approved")
+      return res.status(400).json({ success: false, message: "Withdrawal was approved — cannot reject" });
 
     const refundAmount = Number(w.amount || 0);
 
@@ -784,13 +741,15 @@ router.post("/withdrawals/:uid/:withdrawalId/reject", async (req: Request, res: 
     user.markModified("withdrawals");
 
     const wallets: any = user.wallets || {};
-    const before = Number(wallets.usdt || 0);
-    const after = before + refundAmount;
-    wallets.usdt = after;
+    const walletBefore = Number(wallets.usdt || 0);
+    const walletAfter = walletBefore + refundAmount;
+    wallets.usdt = walletAfter;
     user.wallets = wallets;
     user.markModified("wallets");
 
-    user.balance = Number(user.balance || 0) + refundAmount;
+    const balanceBefore = Number(user.balance || 0);
+    const balanceAfter = balanceBefore + refundAmount;
+    user.balance = balanceAfter;
 
     await user.save();
 
@@ -800,13 +759,22 @@ router.post("/withdrawals/:uid/:withdrawalId/reject", async (req: Request, res: 
       amount: refundAmount,
       asset: w.asset,
       reason: (req.body?.reason as string) || "",
-      metadata: { withdrawalId: wid, txId: w.txId, refunded: true, walletBefore: before, walletAfter: after },
+      metadata: {
+        withdrawalId: wid,
+        txId: w.txId,
+        refunded: true,
+        walletBefore,
+        walletAfter,
+        balanceBefore,
+        balanceAfter,
+      },
     });
 
     return res.json({
       success: true,
       message: `Withdrawal rejected. $${refundAmount.toFixed(2)} refunded.`,
-      newBalance: after,
+      newUsdt: walletAfter,
+      newBalance: balanceAfter,
     });
   } catch (err: any) {
     console.error("Reject withdrawal error:", err);
@@ -815,7 +783,59 @@ router.post("/withdrawals/:uid/:withdrawalId/reject", async (req: Request, res: 
 });
 
 /* ============================================================
- *  BOTS — global bot trades list
+ *  GET /api/admin/converts — all conversions across all users
+ * ============================================================ */
+router.get("/converts", async (req: Request, res: Response) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 25));
+
+    const pipeline: any[] = [
+      { $unwind: "$converts" },
+      {
+        $project: {
+          _id: 0,
+          firebaseUid: "$firebaseUid",
+          userName: "$name",
+          userEmail: "$email",
+          id: "$converts.id",
+          fromSymbol: "$converts.fromSymbol",
+          toSymbol: "$converts.toSymbol",
+          fromAmount: "$converts.fromAmount",
+          toAmount: "$converts.toAmount",
+          usdValue: "$converts.usdValue",
+          fee: "$converts.fee",
+          dateTime: "$converts.dateTime",
+        },
+      },
+      { $sort: { id: -1 } },
+    ];
+
+    const raw = await User.aggregate(pipeline);
+    const uids = Array.from(new Set(raw.map((r: any) => r.firebaseUid).filter(Boolean)));
+    const verifiedSet = await getVerifiedUids(uids);
+    const filtered = raw.filter((r: any) => verifiedSet.has(r.firebaseUid));
+
+    const total = filtered.length;
+    const start = (page - 1) * limit;
+    const converts = filtered.slice(start, start + limit);
+
+    return res.json({
+      success: true,
+      page,
+      limit,
+      total,
+      pages: Math.ceil(total / limit),
+      converts,
+    });
+  } catch (err: any) {
+    console.error("Converts list error:", err);
+    return res.status(500).json({ success: false, message: "Failed to load converts" });
+  }
+});
+
+/* ============================================================
+ *  GET /api/admin/bots — all bot trades
  * ============================================================ */
 router.get("/bots", async (req: Request, res: Response) => {
   try {
@@ -864,7 +884,7 @@ router.get("/bots", async (req: Request, res: Response) => {
 });
 
 /* ============================================================
- *  LOGS
+ *  GET /api/admin/logs — audit trail
  * ============================================================ */
 router.get("/logs", async (req: Request, res: Response) => {
   try {
