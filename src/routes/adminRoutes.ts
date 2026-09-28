@@ -57,7 +57,6 @@ function toCsv(rows: any[], headers: string[]): string {
 
 /**
  * Batch-check which firebaseUids have emailVerified === true.
- * Uses Firebase Admin SDK (100 at a time).
  */
 async function getVerifiedUids(uids: string[]): Promise<Set<string>> {
   const verified = new Set<string>();
@@ -211,7 +210,40 @@ router.get("/stats", async (_req: Request, res: Response) => {
 });
 
 /* ============================================================
- *  GET /api/admin/users — verified only, search + paginate
+ *  GET /api/admin/stats/wallets — total of every wallet field
+ * ============================================================ */
+router.get("/stats/wallets", async (_req: Request, res: Response) => {
+  try {
+    const allUsers = await User.find({}).select("firebaseUid").lean();
+    const uids = allUsers.map((u: any) => u.firebaseUid).filter(Boolean);
+    const verifiedSet = await getVerifiedUids(uids);
+    const verifiedUids = Array.from(verifiedSet);
+
+    const users = await User.find({ firebaseUid: { $in: verifiedUids } })
+      .select("wallets")
+      .lean();
+
+    const totals: Record<string, number> = {};
+    const holders: Record<string, number> = {};
+
+    for (const u of users) {
+      const w = (u as any).wallets || {};
+      for (const key of Object.keys(w)) {
+        const val = Number(w[key]) || 0;
+        totals[key] = (totals[key] || 0) + val;
+        if (val > 0) holders[key] = (holders[key] || 0) + 1;
+      }
+    }
+
+    return res.json({ success: true, totals, holders });
+  } catch (err: any) {
+    console.error("Wallet totals error:", err);
+    return res.status(500).json({ success: false, message: "Failed to load wallet totals" });
+  }
+});
+
+/* ============================================================
+ *  GET /api/admin/users
  * ============================================================ */
 router.get("/users", async (req: Request, res: Response) => {
   try {
@@ -271,7 +303,6 @@ router.get("/users/export", async (_req: Request, res: Response) => {
     const verifiedSet = await getVerifiedUids(uids);
     const verified = all.filter((u: any) => verifiedSet.has(u.firebaseUid));
 
-    // Dynamically collect all wallet field names
     const walletKeys = new Set<string>();
     for (const u of verified) {
       const w = (u as any).wallets || {};
@@ -322,7 +353,7 @@ router.get("/users/export", async (_req: Request, res: Response) => {
 });
 
 /* ============================================================
- *  GET /api/admin/users/:uid — full user detail (verified only)
+ *  GET /api/admin/users/:uid — full user detail
  * ============================================================ */
 router.get("/users/:uid", async (req: Request, res: Response) => {
   try {
@@ -354,7 +385,7 @@ router.get("/users/:uid", async (req: Request, res: Response) => {
 /* ============================================================
  *  POST /api/admin/users/:uid/wallet
  *  Body: { field, action: "credit" | "debit" | "set", amount, reason }
- *  Also mirrors balance when field === "usdt"
+ *  Mirrors balance when field === "usdt"
  * ============================================================ */
 router.post("/users/:uid/wallet", async (req: Request, res: Response) => {
   try {
@@ -394,7 +425,6 @@ router.post("/users/:uid/wallet", async (req: Request, res: Response) => {
     user.wallets = wallets;
     user.markModified("wallets");
 
-    // Mirror balance when field is USDT
     const balanceBefore = Number(user.balance || 0);
     let balanceAfter = balanceBefore;
     if (field === "usdt") {
@@ -522,7 +552,7 @@ router.get("/deposits", async (req: Request, res: Response) => {
 
 /* ============================================================
  *  POST /api/admin/deposits/:uid/:depositId/approve
- *  Auto-credits amount to wallets.usdt AND balance (always USDT)
+ *  Credits USDT + balance automatically
  * ============================================================ */
 router.post("/deposits/:uid/:depositId/approve", async (req: Request, res: Response) => {
   try {
@@ -540,11 +570,9 @@ router.post("/deposits/:uid/:depositId/approve", async (req: Request, res: Respo
 
     const amt = Number(deposit.amount || 0);
 
-    // 1. Mark deposit as Approved
     deposit.status = "Approved";
     user.markModified("deposits");
 
-    // 2. Credit USDT wallet + balance
     const wallets: any = user.wallets || {};
     const walletBefore = Number(wallets.usdt || 0);
     const walletAfter = walletBefore + amt;
@@ -681,7 +709,6 @@ router.get("/withdrawals", async (req: Request, res: Response) => {
 
 /* ============================================================
  *  POST /api/admin/withdrawals/:uid/:withdrawalId/approve
- *  No balance change — money was already deducted on request
  * ============================================================ */
 router.post("/withdrawals/:uid/:withdrawalId/approve", async (req: Request, res: Response) => {
   try {
@@ -719,7 +746,7 @@ router.post("/withdrawals/:uid/:withdrawalId/approve", async (req: Request, res:
 
 /* ============================================================
  *  POST /api/admin/withdrawals/:uid/:withdrawalId/reject
- *  Refunds usdt wallet + balance
+ *  Refunds USDT + balance
  * ============================================================ */
 router.post("/withdrawals/:uid/:withdrawalId/reject", async (req: Request, res: Response) => {
   try {
@@ -783,7 +810,7 @@ router.post("/withdrawals/:uid/:withdrawalId/reject", async (req: Request, res: 
 });
 
 /* ============================================================
- *  GET /api/admin/converts — all conversions across all users
+ *  GET /api/admin/converts
  * ============================================================ */
 router.get("/converts", async (req: Request, res: Response) => {
   try {
@@ -835,7 +862,7 @@ router.get("/converts", async (req: Request, res: Response) => {
 });
 
 /* ============================================================
- *  GET /api/admin/bots — all bot trades
+ *  GET /api/admin/bots
  * ============================================================ */
 router.get("/bots", async (req: Request, res: Response) => {
   try {
