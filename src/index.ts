@@ -7,6 +7,7 @@ import admin from "firebase-admin";
 import path from "path";
 import fs from "fs";
 import authRoutes from "./routes/authRoutes";
+import adminRoutes from "./routes/adminRoutes";
 
 dotenv.config();
 
@@ -131,6 +132,7 @@ app.use("/api/auth/bot-trade", tradeLimiter);
  *  Routes
  * ============================================================ */
 app.use("/api/auth", authRoutes);
+app.use("/api/admin", adminRoutes);
 
 /* ============================================================
  *  Health checks
