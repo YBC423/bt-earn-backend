@@ -1,5 +1,5 @@
 import { Router, Request, Response } from "express";
-import mongoose from "mongoose";
+import admin from "firebase-admin";
 import User from "../models/User";
 import AdminLog from "../models/AdminLog";
 import { requireAdmin } from "../middlewares/adminMiddleware";
@@ -49,42 +49,68 @@ function csvEscape(v: any): string {
   }
   return s;
 }
-
 function toCsv(rows: any[], headers: string[]): string {
   const headerLine = headers.join(",");
-  const body = rows
-    .map((r) => headers.map((h) => csvEscape(r[h])).join(","))
-    .join("\n");
+  const body = rows.map((r) => headers.map((h) => csvEscape(r[h])).join(",")).join("\n");
   return headerLine + "\n" + body;
 }
 
+/**
+ * Fetch a set of firebaseUids that have verified emails.
+ * Uses Firebase Admin SDK in chunks of 100 (batch limit).
+ */
+async function getVerifiedUids(uids: string[]): Promise<Set<string>> {
+  const verified = new Set<string>();
+  const chunks: string[][] = [];
+  for (let i = 0; i < uids.length; i += 100) chunks.push(uids.slice(i, i + 100));
+  for (const chunk of chunks) {
+    try {
+      const result = await admin.auth().getUsers(chunk.map((uid) => ({ uid })));
+      for (const u of result.users) {
+        if (u.emailVerified) verified.add(u.uid);
+      }
+    } catch (e) {
+      console.error("getUsers batch failed:", e);
+    }
+  }
+  return verified;
+}
+
 /* ============================================================
- *  Every route below requires a verified Firebase token
- *  with an email in ADMIN_EMAILS
+ *  All routes require verified admin
  * ============================================================ */
 router.use(requireAdmin);
 
 /* ============================================================
- *  GET /api/admin/me — confirm admin session works
+ *  GET /api/admin/me
  * ============================================================ */
 router.get("/me", (req: Request, res: Response) => {
   return res.json({
     success: true,
-    admin: {
-      email: req.adminEmail,
-      uid: req.adminFirebaseUid,
-    },
+    admin: { email: req.adminEmail, uid: req.adminFirebaseUid },
   });
 });
 
 /* ============================================================
- *  GET /api/admin/stats — dashboard summary
+ *  GET /api/admin/stats — dashboard summary (verified users only)
  * ============================================================ */
 router.get("/stats", async (_req: Request, res: Response) => {
   try {
-    const totalUsers = await User.countDocuments({});
+    // 1. List all users in MongoDB
+    const allUsers = await User.find({})
+      .select("firebaseUid")
+      .lean();
 
+    const uids = allUsers.map((u: any) => u.firebaseUid).filter(Boolean);
+    const verifiedSet = await getVerifiedUids(uids);
+
+    // 2. Count only verified
+    const verifiedUids = Array.from(verifiedSet);
+    const verifiedCount = verifiedUids.length;
+
+    // 3. Aggregate stats over verified users only
     const balanceAgg = await User.aggregate([
+      { $match: { firebaseUid: { $in: verifiedUids } } },
       {
         $group: {
           _id: null,
@@ -97,6 +123,7 @@ router.get("/stats", async (_req: Request, res: Response) => {
     const totalProfit = balanceAgg[0]?.totalProfit || 0;
 
     const depositAgg = await User.aggregate([
+      { $match: { firebaseUid: { $in: verifiedUids } } },
       { $unwind: { path: "$deposits", preserveNullAndEmptyArrays: false } },
       {
         $group: {
@@ -106,14 +133,21 @@ router.get("/stats", async (_req: Request, res: Response) => {
         },
       },
     ]);
-    const depositStats = { Pending: { count: 0, total: 0 }, Approved: { count: 0, total: 0 }, Rejected: { count: 0, total: 0 } };
+    const depositStats = {
+      Pending: { count: 0, total: 0 },
+      Approved: { count: 0, total: 0 },
+      Rejected: { count: 0, total: 0 },
+    };
     for (const d of depositAgg) {
       if (d._id === "Pending") depositStats.Pending = { count: d.count, total: d.total };
-      else if (d._id === "Approved" || d._id === "Completed") depositStats.Approved = { count: d.count, total: d.total };
-      else if (d._id === "Rejected") depositStats.Rejected = { count: d.count, total: d.total };
+      else if (d._id === "Approved" || d._id === "Completed")
+        depositStats.Approved = { count: d.count, total: d.total };
+      else if (d._id === "Rejected")
+        depositStats.Rejected = { count: d.count, total: d.total };
     }
 
     const withdrawAgg = await User.aggregate([
+      { $match: { firebaseUid: { $in: verifiedUids } } },
       { $unwind: { path: "$withdrawals", preserveNullAndEmptyArrays: false } },
       {
         $group: {
@@ -123,14 +157,21 @@ router.get("/stats", async (_req: Request, res: Response) => {
         },
       },
     ]);
-    const withdrawStats = { Pending: { count: 0, total: 0 }, Approved: { count: 0, total: 0 }, Rejected: { count: 0, total: 0 } };
+    const withdrawStats = {
+      Pending: { count: 0, total: 0 },
+      Approved: { count: 0, total: 0 },
+      Rejected: { count: 0, total: 0 },
+    };
     for (const d of withdrawAgg) {
       if (d._id === "Pending") withdrawStats.Pending = { count: d.count, total: d.total };
-      else if (d._id === "Approved" || d._id === "Completed") withdrawStats.Approved = { count: d.count, total: d.total };
-      else if (d._id === "Rejected") withdrawStats.Rejected = { count: d.count, total: d.total };
+      else if (d._id === "Approved" || d._id === "Completed")
+        withdrawStats.Approved = { count: d.count, total: d.total };
+      else if (d._id === "Rejected")
+        withdrawStats.Rejected = { count: d.count, total: d.total };
     }
 
     const tradeAgg = await User.aggregate([
+      { $match: { firebaseUid: { $in: verifiedUids } } },
       { $unwind: { path: "$trades", preserveNullAndEmptyArrays: false } },
       {
         $group: {
@@ -143,10 +184,13 @@ router.get("/stats", async (_req: Request, res: Response) => {
     const totalTrades = tradeAgg[0]?.count || 0;
     const botProfit = tradeAgg[0]?.totalProfit || 0;
 
-    const bannedUsers = await User.countDocuments({ status: "banned" });
-    const activeUsers = await User.countDocuments({ status: "active" });
+    const bannedUsers = await User.countDocuments({
+      firebaseUid: { $in: verifiedUids },
+      status: "banned",
+    });
+    const activeUsers = verifiedCount - bannedUsers;
 
-    const recentUsers = await User.find({})
+    const recentUsers = await User.find({ firebaseUid: { $in: verifiedUids } })
       .sort({ createdAt: -1 })
       .limit(5)
       .select("name email country status createdAt wallets.usdt")
@@ -155,7 +199,7 @@ router.get("/stats", async (_req: Request, res: Response) => {
     return res.json({
       success: true,
       stats: {
-        totalUsers,
+        totalUsers: verifiedCount,
         activeUsers,
         bannedUsers,
         totalUsdt,
@@ -175,11 +219,11 @@ router.get("/stats", async (_req: Request, res: Response) => {
 
 /* ============================================================
  *  GET /api/admin/users — list + search + pagination
- *  Query: ?q=&page=1&limit=25&status=all
+ *  Only VERIFIED Firebase users are shown.
  * ============================================================ */
 router.get("/users", async (req: Request, res: Response) => {
   try {
-    const q = (req.query.q as string || "").trim();
+    const q = ((req.query.q as string) || "").trim();
     const page = Math.max(1, parseInt(req.query.page as string) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 25));
     const status = (req.query.status as string) || "all";
@@ -194,13 +238,19 @@ router.get("/users", async (req: Request, res: Response) => {
     }
     if (status !== "all") filter.status = status;
 
-    const total = await User.countDocuments(filter);
-    const users = await User.find(filter)
+    // Pull all candidate users then filter by verified in memory
+    const allCandidates = await User.find(filter)
       .sort({ createdAt: -1 })
-      .skip((page - 1) * limit)
-      .limit(limit)
       .select("name email country status firebaseUid wallets balance totalProfit createdAt lastLogin")
       .lean();
+
+    const uids = allCandidates.map((u: any) => u.firebaseUid).filter(Boolean);
+    const verifiedSet = await getVerifiedUids(uids);
+
+    const verifiedUsers = allCandidates.filter((u: any) => verifiedSet.has(u.firebaseUid));
+    const total = verifiedUsers.length;
+    const start = (page - 1) * limit;
+    const users = verifiedUsers.slice(start, start + limit);
 
     return res.json({
       success: true,
@@ -217,16 +267,20 @@ router.get("/users", async (req: Request, res: Response) => {
 });
 
 /* ============================================================
- *  GET /api/admin/users/export — CSV download
+ *  GET /api/admin/users/export — CSV (verified only)
  * ============================================================ */
 router.get("/users/export", async (_req: Request, res: Response) => {
   try {
-    const users = await User.find({})
+    const all = await User.find({})
       .sort({ createdAt: -1 })
       .select("name email country status firebaseUid wallets balance totalProfit createdAt")
       .lean();
 
-    const rows = users.map((u: any) => ({
+    const uids = all.map((u: any) => u.firebaseUid).filter(Boolean);
+    const verifiedSet = await getVerifiedUids(uids);
+    const verified = all.filter((u: any) => verifiedSet.has(u.firebaseUid));
+
+    const rows = verified.map((u: any) => ({
       name: u.name,
       email: u.email,
       country: u.country,
@@ -257,7 +311,10 @@ router.get("/users/export", async (_req: Request, res: Response) => {
     ]);
 
     res.setHeader("Content-Type", "text/csv");
-    res.setHeader("Content-Disposition", `attachment; filename=bt-earn-users-${Date.now()}.csv`);
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=bt-earn-users-${Date.now()}.csv`
+    );
     return res.send(csv);
   } catch (err: any) {
     console.error("Users export error:", err);
@@ -266,12 +323,29 @@ router.get("/users/export", async (_req: Request, res: Response) => {
 });
 
 /* ============================================================
- *  GET /api/admin/users/:uid — single user full detail
+ *  GET /api/admin/users/:uid — full detail (verify Firebase)
  * ============================================================ */
 router.get("/users/:uid", async (req: Request, res: Response) => {
   try {
+    // Verify this Firebase user is verified
+    try {
+      const fbUser = await admin.auth().getUser(req.params.uid);
+      if (!fbUser.emailVerified) {
+        return res.status(403).json({
+          success: false,
+          message: "This user has not verified their email. Hidden from admin.",
+        });
+      }
+    } catch (e) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found in Firebase",
+      });
+    }
+
     const user = await User.findOne({ firebaseUid: req.params.uid }).lean();
-    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+    if (!user)
+      return res.status(404).json({ success: false, message: "User not found" });
     return res.json({ success: true, user });
   } catch (err: any) {
     console.error("User detail error:", err);
@@ -280,8 +354,7 @@ router.get("/users/:uid", async (req: Request, res: Response) => {
 });
 
 /* ============================================================
- *  POST /api/admin/users/:uid/credit — credit USDT
- *  Body: { amount, reason }
+ *  POST /api/admin/users/:uid/credit — credit USDT (safe)
  * ============================================================ */
 router.post("/users/:uid/credit", async (req: Request, res: Response) => {
   try {
@@ -294,18 +367,19 @@ router.post("/users/:uid/credit", async (req: Request, res: Response) => {
     const user = await User.findOne({ firebaseUid: req.params.uid });
     if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
-    const before = Number(user.wallets?.usdt || 0);
+    // Safe read-modify-write
+    const wallets: any = user.wallets || {};
+    const before = Number(wallets.usdt || 0);
     const after = before + amt;
+    wallets.usdt = after;
 
-    await User.updateOne(
-      { firebaseUid: req.params.uid },
-      {
-        $inc: { "wallets.usdt": amt, balance: amt },
-        $set: { "wallets.usdt": after },
-      }
-    );
-    // Re-read for safety (the $set above ensures the value is exact)
-    const updated = await User.findOne({ firebaseUid: req.params.uid });
+    const balanceBefore = Number(user.balance || 0);
+    const balanceAfter = balanceBefore + amt;
+
+    user.wallets = wallets;
+    user.balance = balanceAfter;
+    user.markModified("wallets");
+    await user.save();
 
     await writeLog(req, "CREDIT_USDT", "user", {
       targetId: req.params.uid,
@@ -313,13 +387,13 @@ router.post("/users/:uid/credit", async (req: Request, res: Response) => {
       amount: amt,
       asset: "USDT",
       reason: reason || "",
-      metadata: { before, after },
+      metadata: { walletBefore: before, walletAfter: after, balanceBefore, balanceAfter },
     });
 
     return res.json({
       success: true,
       message: `Credited $${amt.toFixed(2)} USDT`,
-      newBalance: updated?.wallets?.usdt || 0,
+      newBalance: after,
     });
   } catch (err: any) {
     console.error("Credit error:", err);
@@ -328,8 +402,7 @@ router.post("/users/:uid/credit", async (req: Request, res: Response) => {
 });
 
 /* ============================================================
- *  POST /api/admin/users/:uid/debit — debit USDT
- *  Body: { amount, reason }
+ *  POST /api/admin/users/:uid/debit — debit USDT (safe)
  * ============================================================ */
 router.post("/users/:uid/debit", async (req: Request, res: Response) => {
   try {
@@ -342,7 +415,8 @@ router.post("/users/:uid/debit", async (req: Request, res: Response) => {
     const user = await User.findOne({ firebaseUid: req.params.uid });
     if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
-    const before = Number(user.wallets?.usdt || 0);
+    const wallets: any = user.wallets || {};
+    const before = Number(wallets.usdt || 0);
     if (before < amt) {
       return res.status(400).json({
         success: false,
@@ -350,14 +424,15 @@ router.post("/users/:uid/debit", async (req: Request, res: Response) => {
       });
     }
     const after = before - amt;
+    wallets.usdt = after;
 
-    await User.updateOne(
-      { firebaseUid: req.params.uid },
-      {
-        $inc: { "wallets.usdt": -amt, balance: -amt },
-      }
-    );
-    const updated = await User.findOne({ firebaseUid: req.params.uid });
+    const balanceBefore = Number(user.balance || 0);
+    const balanceAfter = Math.max(0, balanceBefore - amt);
+
+    user.wallets = wallets;
+    user.balance = balanceAfter;
+    user.markModified("wallets");
+    await user.save();
 
     await writeLog(req, "DEBIT_USDT", "user", {
       targetId: req.params.uid,
@@ -365,13 +440,13 @@ router.post("/users/:uid/debit", async (req: Request, res: Response) => {
       amount: amt,
       asset: "USDT",
       reason: reason || "",
-      metadata: { before, after },
+      metadata: { walletBefore: before, walletAfter: after, balanceBefore, balanceAfter },
     });
 
     return res.json({
       success: true,
       message: `Debited $${amt.toFixed(2)} USDT`,
-      newBalance: updated?.wallets?.usdt || 0,
+      newBalance: after,
     });
   } catch (err: any) {
     console.error("Debit error:", err);
@@ -380,8 +455,54 @@ router.post("/users/:uid/debit", async (req: Request, res: Response) => {
 });
 
 /* ============================================================
+ *  POST /api/admin/users/:uid/wallet — set any wallet field directly
+ *  Body: { field: "usdt" | "btc" | "eth" | "ngn" | custom, value, reason }
+ *  Gives you MongoDB-level control from the admin panel.
+ * ============================================================ */
+router.post("/users/:uid/wallet", async (req: Request, res: Response) => {
+  try {
+    const { field, value, reason } = req.body || {};
+    if (!field || typeof field !== "string") {
+      return res.status(400).json({ success: false, message: "field is required" });
+    }
+    const num = Number(value);
+    if (isNaN(num) || num < 0) {
+      return res.status(400).json({ success: false, message: "value must be a non-negative number" });
+    }
+
+    const user = await User.findOne({ firebaseUid: req.params.uid });
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+
+    const wallets: any = user.wallets || {};
+    const before = Number(wallets[field] || 0);
+    wallets[field] = num;
+
+    user.wallets = wallets;
+    user.markModified("wallets");
+    await user.save();
+
+    await writeLog(req, "SET_WALLET", "user", {
+      targetId: req.params.uid,
+      targetEmail: user.email,
+      amount: num,
+      asset: field.toUpperCase(),
+      reason: reason || "",
+      metadata: { field, before, after: num },
+    });
+
+    return res.json({
+      success: true,
+      message: `Set ${field.toUpperCase()} balance to ${num}`,
+      wallet: user.wallets,
+    });
+  } catch (err: any) {
+    console.error("Set wallet error:", err);
+    return res.status(500).json({ success: false, message: "Set wallet failed" });
+  }
+});
+
+/* ============================================================
  *  POST /api/admin/users/:uid/status — ban / unban
- *  Body: { status: "active" | "banned", reason }
  * ============================================================ */
 router.post("/users/:uid/status", async (req: Request, res: Response) => {
   try {
@@ -393,7 +514,8 @@ router.post("/users/:uid/status", async (req: Request, res: Response) => {
     const user = await User.findOne({ firebaseUid: req.params.uid });
     if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
-    await User.updateOne({ firebaseUid: req.params.uid }, { $set: { status } });
+    user.status = status;
+    await user.save();
 
     await writeLog(req, status === "banned" ? "BAN_USER" : "UNBAN_USER", "user", {
       targetId: req.params.uid,
@@ -410,8 +532,7 @@ router.post("/users/:uid/status", async (req: Request, res: Response) => {
 });
 
 /* ============================================================
- *  GET /api/admin/deposits — all deposits across all users
- *  Query: ?status=Pending|Approved|Rejected|all&page=1&limit=25
+ *  DEPOSITS list
  * ============================================================ */
 router.get("/deposits", async (req: Request, res: Response) => {
   try {
@@ -441,12 +562,15 @@ router.get("/deposits", async (req: Request, res: Response) => {
     if (status !== "all") pipeline.push({ $match: { status } });
     pipeline.push({ $sort: { id: -1 } });
 
-    const countPipeline = [...pipeline, { $count: "total" }];
-    const countRes = await User.aggregate(countPipeline);
-    const total = countRes[0]?.total || 0;
+    // Filter to verified users only
+    const raw = await User.aggregate(pipeline);
+    const uids = Array.from(new Set(raw.map((r: any) => r.firebaseUid).filter(Boolean)));
+    const verifiedSet = await getVerifiedUids(uids);
+    const filtered = raw.filter((r: any) => verifiedSet.has(r.firebaseUid));
 
-    pipeline.push({ $skip: (page - 1) * limit }, { $limit: limit });
-    const deposits = await User.aggregate(pipeline);
+    const total = filtered.length;
+    const start = (page - 1) * limit;
+    const deposits = filtered.slice(start, start + limit);
 
     return res.json({
       success: true,
@@ -464,8 +588,6 @@ router.get("/deposits", async (req: Request, res: Response) => {
 
 /* ============================================================
  *  POST /api/admin/deposits/:uid/:depositId/approve
- *  Body: { reason? }
- *  Sets deposit status → Approved AND credits user's USDT
  * ============================================================ */
 router.post("/deposits/:uid/:depositId/approve", async (req: Request, res: Response) => {
   try {
@@ -473,24 +595,27 @@ router.post("/deposits/:uid/:depositId/approve", async (req: Request, res: Respo
     const user = await User.findOne({ firebaseUid: req.params.uid });
     if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
-    const deposit = user.deposits.find((d: any) => Number(d.id) === depositId);
+    const deposit: any = (user.deposits || []).find((d: any) => Number(d.id) === depositId);
     if (!deposit) return res.status(404).json({ success: false, message: "Deposit not found" });
 
-    if (deposit.status === "Approved") {
+    if (deposit.status === "Approved")
       return res.status(400).json({ success: false, message: "Deposit already approved" });
-    }
 
     const amt = Number(deposit.amount || 0);
 
-    await User.updateOne(
-      { firebaseUid: req.params.uid, "deposits.id": depositId },
-      {
-        $set: { "deposits.$.status": "Approved" },
-        $inc: { "wallets.usdt": amt, balance: amt },
-      }
-    );
+    deposit.status = "Approved";
+    user.markModified("deposits");
 
-    const updated = await User.findOne({ firebaseUid: req.params.uid });
+    const wallets: any = user.wallets || {};
+    const before = Number(wallets.usdt || 0);
+    const after = before + amt;
+    wallets.usdt = after;
+    user.wallets = wallets;
+    user.markModified("wallets");
+
+    user.balance = Number(user.balance || 0) + amt;
+
+    await user.save();
 
     await writeLog(req, "APPROVE_DEPOSIT", "deposit", {
       targetId: String(depositId),
@@ -498,13 +623,13 @@ router.post("/deposits/:uid/:depositId/approve", async (req: Request, res: Respo
       amount: amt,
       asset: deposit.asset,
       reason: (req.body?.reason as string) || "",
-      metadata: { depositId, txId: deposit.txId },
+      metadata: { depositId, txId: deposit.txId, walletBefore: before, walletAfter: after },
     });
 
     return res.json({
       success: true,
       message: `Deposit approved. $${amt.toFixed(2)} credited.`,
-      newBalance: updated?.wallets?.usdt || 0,
+      newBalance: after,
     });
   } catch (err: any) {
     console.error("Approve deposit error:", err);
@@ -514,8 +639,6 @@ router.post("/deposits/:uid/:depositId/approve", async (req: Request, res: Respo
 
 /* ============================================================
  *  POST /api/admin/deposits/:uid/:depositId/reject
- *  Body: { reason }
- *  Sets deposit status → Rejected (no balance change)
  * ============================================================ */
 router.post("/deposits/:uid/:depositId/reject", async (req: Request, res: Response) => {
   try {
@@ -523,17 +646,15 @@ router.post("/deposits/:uid/:depositId/reject", async (req: Request, res: Respon
     const user = await User.findOne({ firebaseUid: req.params.uid });
     if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
-    const deposit = user.deposits.find((d: any) => Number(d.id) === depositId);
+    const deposit: any = (user.deposits || []).find((d: any) => Number(d.id) === depositId);
     if (!deposit) return res.status(404).json({ success: false, message: "Deposit not found" });
 
-    if (deposit.status === "Rejected") {
+    if (deposit.status === "Rejected")
       return res.status(400).json({ success: false, message: "Deposit already rejected" });
-    }
 
-    await User.updateOne(
-      { firebaseUid: req.params.uid, "deposits.id": depositId },
-      { $set: { "deposits.$.status": "Rejected" } }
-    );
+    deposit.status = "Rejected";
+    user.markModified("deposits");
+    await user.save();
 
     await writeLog(req, "REJECT_DEPOSIT", "deposit", {
       targetId: String(depositId),
@@ -552,7 +673,7 @@ router.post("/deposits/:uid/:depositId/reject", async (req: Request, res: Respon
 });
 
 /* ============================================================
- *  GET /api/admin/withdrawals — all withdrawals across users
+ *  WITHDRAWALS list
  * ============================================================ */
 router.get("/withdrawals", async (req: Request, res: Response) => {
   try {
@@ -583,11 +704,14 @@ router.get("/withdrawals", async (req: Request, res: Response) => {
     if (status !== "all") pipeline.push({ $match: { status } });
     pipeline.push({ $sort: { id: -1 } });
 
-    const countRes = await User.aggregate([...pipeline, { $count: "total" }]);
-    const total = countRes[0]?.total || 0;
+    const raw = await User.aggregate(pipeline);
+    const uids = Array.from(new Set(raw.map((r: any) => r.firebaseUid).filter(Boolean)));
+    const verifiedSet = await getVerifiedUids(uids);
+    const filtered = raw.filter((r: any) => verifiedSet.has(r.firebaseUid));
 
-    pipeline.push({ $skip: (page - 1) * limit }, { $limit: limit });
-    const withdrawals = await User.aggregate(pipeline);
+    const total = filtered.length;
+    const start = (page - 1) * limit;
+    const withdrawals = filtered.slice(start, start + limit);
 
     return res.json({
       success: true,
@@ -605,7 +729,6 @@ router.get("/withdrawals", async (req: Request, res: Response) => {
 
 /* ============================================================
  *  POST /api/admin/withdrawals/:uid/:withdrawalId/approve
- *  Already deducted at request time. Just marks Approved.
  * ============================================================ */
 router.post("/withdrawals/:uid/:withdrawalId/approve", async (req: Request, res: Response) => {
   try {
@@ -613,17 +736,15 @@ router.post("/withdrawals/:uid/:withdrawalId/approve", async (req: Request, res:
     const user = await User.findOne({ firebaseUid: req.params.uid });
     if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
-    const w = user.withdrawals.find((x: any) => Number(x.id) === wid);
+    const w: any = (user.withdrawals || []).find((x: any) => Number(x.id) === wid);
     if (!w) return res.status(404).json({ success: false, message: "Withdrawal not found" });
 
-    if (w.status === "Approved") {
+    if (w.status === "Approved")
       return res.status(400).json({ success: false, message: "Withdrawal already approved" });
-    }
 
-    await User.updateOne(
-      { firebaseUid: req.params.uid, "withdrawals.id": wid },
-      { $set: { "withdrawals.$.status": "Approved" } }
-    );
+    w.status = "Approved";
+    user.markModified("withdrawals");
+    await user.save();
 
     await writeLog(req, "APPROVE_WITHDRAWAL", "withdrawal", {
       targetId: String(wid),
@@ -643,8 +764,7 @@ router.post("/withdrawals/:uid/:withdrawalId/approve", async (req: Request, res:
 
 /* ============================================================
  *  POST /api/admin/withdrawals/:uid/:withdrawalId/reject
- *  Body: { reason }
- *  Sets status → Rejected AND refunds the USDT back to user.
+ *  Refunds the USDT back to user's wallet.
  * ============================================================ */
 router.post("/withdrawals/:uid/:withdrawalId/reject", async (req: Request, res: Response) => {
   try {
@@ -652,24 +772,27 @@ router.post("/withdrawals/:uid/:withdrawalId/reject", async (req: Request, res: 
     const user = await User.findOne({ firebaseUid: req.params.uid });
     if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
-    const w = user.withdrawals.find((x: any) => Number(x.id) === wid);
+    const w: any = (user.withdrawals || []).find((x: any) => Number(x.id) === wid);
     if (!w) return res.status(404).json({ success: false, message: "Withdrawal not found" });
 
-    if (w.status === "Rejected") {
+    if (w.status === "Rejected")
       return res.status(400).json({ success: false, message: "Withdrawal already rejected" });
-    }
 
     const refundAmount = Number(w.amount || 0);
 
-    await User.updateOne(
-      { firebaseUid: req.params.uid, "withdrawals.id": wid },
-      {
-        $set: { "withdrawals.$.status": "Rejected" },
-        $inc: { "wallets.usdt": refundAmount, balance: refundAmount },
-      }
-    );
+    w.status = "Rejected";
+    user.markModified("withdrawals");
 
-    const updated = await User.findOne({ firebaseUid: req.params.uid });
+    const wallets: any = user.wallets || {};
+    const before = Number(wallets.usdt || 0);
+    const after = before + refundAmount;
+    wallets.usdt = after;
+    user.wallets = wallets;
+    user.markModified("wallets");
+
+    user.balance = Number(user.balance || 0) + refundAmount;
+
+    await user.save();
 
     await writeLog(req, "REJECT_WITHDRAWAL", "withdrawal", {
       targetId: String(wid),
@@ -677,13 +800,13 @@ router.post("/withdrawals/:uid/:withdrawalId/reject", async (req: Request, res: 
       amount: refundAmount,
       asset: w.asset,
       reason: (req.body?.reason as string) || "",
-      metadata: { withdrawalId: wid, txId: w.txId, refunded: true },
+      metadata: { withdrawalId: wid, txId: w.txId, refunded: true, walletBefore: before, walletAfter: after },
     });
 
     return res.json({
       success: true,
       message: `Withdrawal rejected. $${refundAmount.toFixed(2)} refunded.`,
-      newBalance: updated?.wallets?.usdt || 0,
+      newBalance: after,
     });
   } catch (err: any) {
     console.error("Reject withdrawal error:", err);
@@ -692,8 +815,7 @@ router.post("/withdrawals/:uid/:withdrawalId/reject", async (req: Request, res: 
 });
 
 /* ============================================================
- *  GET /api/admin/bots — all bot trades across all users
- *  Query: ?page=1&limit=50
+ *  BOTS — global bot trades list
  * ============================================================ */
 router.get("/bots", async (req: Request, res: Response) => {
   try {
@@ -718,11 +840,14 @@ router.get("/bots", async (req: Request, res: Response) => {
       { $sort: { id: -1 } },
     ];
 
-    const countRes = await User.aggregate([...pipeline, { $count: "total" }]);
-    const total = countRes[0]?.total || 0;
+    const raw = await User.aggregate(pipeline);
+    const uids = Array.from(new Set(raw.map((r: any) => r.firebaseUid).filter(Boolean)));
+    const verifiedSet = await getVerifiedUids(uids);
+    const filtered = raw.filter((r: any) => verifiedSet.has(r.firebaseUid));
 
-    pipeline.push({ $skip: (page - 1) * limit }, { $limit: limit });
-    const trades = await User.aggregate(pipeline);
+    const total = filtered.length;
+    const start = (page - 1) * limit;
+    const trades = filtered.slice(start, start + limit);
 
     return res.json({
       success: true,
@@ -739,8 +864,7 @@ router.get("/bots", async (req: Request, res: Response) => {
 });
 
 /* ============================================================
- *  GET /api/admin/logs — audit trail
- *  Query: ?page=1&limit=50
+ *  LOGS
  * ============================================================ */
 router.get("/logs", async (req: Request, res: Response) => {
   try {
