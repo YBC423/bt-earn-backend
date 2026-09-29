@@ -55,9 +55,6 @@ function toCsv(rows: any[], headers: string[]): string {
   return headerLine + "\n" + body;
 }
 
-/**
- * Batch-check which firebaseUids have emailVerified === true.
- */
 async function getVerifiedUids(uids: string[]): Promise<Set<string>> {
   const verified = new Set<string>();
   const chunks: string[][] = [];
@@ -91,7 +88,7 @@ router.get("/me", (req: Request, res: Response) => {
 });
 
 /* ============================================================
- *  GET /api/admin/stats — dashboard summary (verified users only)
+ *  GET /api/admin/stats — dashboard summary
  * ============================================================ */
 router.get("/stats", async (_req: Request, res: Response) => {
   try {
@@ -290,7 +287,7 @@ router.get("/users", async (req: Request, res: Response) => {
 });
 
 /* ============================================================
- *  GET /api/admin/users/export — CSV (verified only)
+ *  GET /api/admin/users/export — CSV
  * ============================================================ */
 router.get("/users/export", async (_req: Request, res: Response) => {
   try {
@@ -383,9 +380,66 @@ router.get("/users/:uid", async (req: Request, res: Response) => {
 });
 
 /* ============================================================
+ *  DELETE /api/admin/users/:uid
+ *  Removes user from Firebase Auth + Firestore + MongoDB.
+ *  Email becomes available to sign up again.
+ * ============================================================ */
+router.delete("/users/:uid", async (req: Request, res: Response) => {
+  try {
+    const uid = req.params.uid;
+
+    const mongoUser = await User.findOne({ firebaseUid: uid }).lean();
+    if (!mongoUser) {
+      return res.status(404).json({ success: false, message: "User not found in MongoDB" });
+    }
+
+    const email = (mongoUser as any).email || "";
+    const name = (mongoUser as any).name || "";
+
+    // 1. Delete from Firebase Auth (frees up the email)
+    try {
+      await admin.auth().deleteUser(uid);
+    } catch (e: any) {
+      if (e?.code !== "auth/user-not-found") {
+        console.error("Firebase delete failed:", e);
+        return res.status(500).json({
+          success: false,
+          message: "Failed to delete user from Firebase: " + (e?.message || e),
+        });
+      }
+    }
+
+    // 2. Delete from Firestore (best-effort)
+    try {
+      const admin_firestore = require("firebase-admin/firestore");
+      const firestore = admin_firestore.getFirestore();
+      await firestore.collection("users").doc(uid).delete();
+    } catch (e: any) {
+      console.warn("Firestore delete failed (continuing):", e?.message || e);
+    }
+
+    // 3. Delete from MongoDB
+    await User.deleteOne({ firebaseUid: uid });
+
+    // 4. Audit log
+    await writeLog(req, "DELETE_USER", "user", {
+      targetId: uid,
+      targetEmail: email,
+      metadata: { name, email, deletedFrom: ["firebase", "firestore", "mongodb"] },
+    });
+
+    return res.json({
+      success: true,
+      message: `User ${email} deleted from Firebase, Firestore, and MongoDB. Email can sign up again.`,
+    });
+  } catch (err: any) {
+    console.error("Delete user error:", err);
+    return res.status(500).json({ success: false, message: "Delete failed: " + (err?.message || err) });
+  }
+});
+
+/* ============================================================
  *  POST /api/admin/users/:uid/wallet
- *  Body: { field, action: "credit" | "debit" | "set", amount, reason }
- *  Mirrors balance when field === "usdt"
  * ============================================================ */
 router.post("/users/:uid/wallet", async (req: Request, res: Response) => {
   try {
@@ -552,7 +606,6 @@ router.get("/deposits", async (req: Request, res: Response) => {
 
 /* ============================================================
  *  POST /api/admin/deposits/:uid/:depositId/approve
- *  Credits USDT + balance automatically
  * ============================================================ */
 router.post("/deposits/:uid/:depositId/approve", async (req: Request, res: Response) => {
   try {
@@ -746,7 +799,6 @@ router.post("/withdrawals/:uid/:withdrawalId/approve", async (req: Request, res:
 
 /* ============================================================
  *  POST /api/admin/withdrawals/:uid/:withdrawalId/reject
- *  Refunds USDT + balance
  * ============================================================ */
 router.post("/withdrawals/:uid/:withdrawalId/reject", async (req: Request, res: Response) => {
   try {
