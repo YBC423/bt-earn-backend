@@ -207,7 +207,7 @@ router.get("/stats", async (_req: Request, res: Response) => {
 });
 
 /* ============================================================
- *  GET /api/admin/stats/wallets — total of every wallet field
+ *  GET /api/admin/stats/wallets
  * ============================================================ */
 router.get("/stats/wallets", async (_req: Request, res: Response) => {
   try {
@@ -236,6 +236,92 @@ router.get("/stats/wallets", async (_req: Request, res: Response) => {
   } catch (err: any) {
     console.error("Wallet totals error:", err);
     return res.status(500).json({ success: false, message: "Failed to load wallet totals" });
+  }
+});
+
+/* ============================================================
+ *  POST /api/admin/sync-users — backfill verified Firebase users into MongoDB
+ * ============================================================ */
+router.post("/sync-users", async (req: Request, res: Response) => {
+  try {
+    const created: string[] = [];
+    const skipped: string[] = [];
+    const errors: string[] = [];
+    let totalVerified = 0;
+
+    let nextPageToken: string | undefined;
+    do {
+      const listResult = await admin.auth().listUsers(1000, nextPageToken);
+      for (const fbUser of listResult.users) {
+        if (!fbUser.emailVerified) continue;
+        totalVerified++;
+
+        // Skip if already in MongoDB
+        const exists = await User.findOne({ firebaseUid: fbUser.uid }).lean();
+        if (exists) {
+          skipped.push(fbUser.email || fbUser.uid);
+          continue;
+        }
+
+        // Use Firebase displayName, fallback to email prefix, fallback to "User"
+        const displayName =
+          fbUser.displayName && fbUser.displayName.trim()
+            ? fbUser.displayName.trim()
+            : (fbUser.email ? fbUser.email.split("@")[0] : "User");
+
+        try {
+          await User.create({
+            name: displayName,
+            email: (fbUser.email || "").toLowerCase().trim(),
+            country: "Not set",
+            firebaseUid: fbUser.uid,
+            balance: 0,
+            wallets: { usdt: 0, btc: 0, eth: 0, ngn: 0 },
+            deposits: [],
+            withdrawals: [],
+            converts: [],
+            trades: [],
+            tradeBots: [],
+            loginHistory: [],
+            lastLogin: null,
+            totalProfit: 0,
+            status: "active",
+          });
+          created.push(fbUser.email || fbUser.uid);
+        } catch (e: any) {
+          // Handle duplicate key errors gracefully
+          if (e?.code === 11000) {
+            skipped.push(fbUser.email || fbUser.uid);
+          } else {
+            console.error("Create user failed:", e);
+            errors.push(`${fbUser.email || fbUser.uid}: ${e?.message || e}`);
+          }
+        }
+      }
+      nextPageToken = listResult.pageToken;
+    } while (nextPageToken);
+
+    await writeLog(req, "SYNC_VERIFIED_USERS", "system", {
+      metadata: {
+        totalVerified,
+        created: created.length,
+        skipped: skipped.length,
+        errors: errors.length,
+      },
+      reason: `Backfilled ${created.length} verified user(s) into MongoDB`,
+    });
+
+    return res.json({
+      success: true,
+      message: `Synced ${created.length} new user(s). Skipped ${skipped.length} (already in DB). Total verified: ${totalVerified}.`,
+      created,
+      skipped,
+      errors,
+      totalVerified,
+    });
+  } catch (err: any) {
+    console.error("Sync users error:", err);
+    return res.status(500).json({ success: false, message: "Sync failed: " + (err?.message || err) });
   }
 });
 
@@ -381,8 +467,6 @@ router.get("/users/:uid", async (req: Request, res: Response) => {
 
 /* ============================================================
  *  DELETE /api/admin/users/:uid
- *  Removes user from Firebase Auth + Firestore + MongoDB.
- *  Email becomes available to sign up again.
  * ============================================================ */
 router.delete("/users/:uid", async (req: Request, res: Response) => {
   try {
@@ -396,7 +480,6 @@ router.delete("/users/:uid", async (req: Request, res: Response) => {
     const email = (mongoUser as any).email || "";
     const name = (mongoUser as any).name || "";
 
-    // 1. Delete from Firebase Auth (frees up the email)
     try {
       await admin.auth().deleteUser(uid);
     } catch (e: any) {
@@ -409,7 +492,6 @@ router.delete("/users/:uid", async (req: Request, res: Response) => {
       }
     }
 
-    // 2. Delete from Firestore (best-effort)
     try {
       const admin_firestore = require("firebase-admin/firestore");
       const firestore = admin_firestore.getFirestore();
@@ -418,10 +500,8 @@ router.delete("/users/:uid", async (req: Request, res: Response) => {
       console.warn("Firestore delete failed (continuing):", e?.message || e);
     }
 
-    // 3. Delete from MongoDB
     await User.deleteOne({ firebaseUid: uid });
 
-    // 4. Audit log
     await writeLog(req, "DELETE_USER", "user", {
       targetId: uid,
       targetEmail: email,
