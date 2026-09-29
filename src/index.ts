@@ -73,6 +73,7 @@ if (firebaseServiceAccount) {
 const allowedOrigins = [
   "https://bt-earn.xyz",
   "https://www.bt-earn.xyz",
+  "https://admin.bt-earn.xyz",
   "https://bt-earn.vercel.app",
   "http://localhost:3000",
   "http://localhost:5173",
