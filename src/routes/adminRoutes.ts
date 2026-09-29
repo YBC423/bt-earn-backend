@@ -240,7 +240,7 @@ router.get("/stats/wallets", async (_req: Request, res: Response) => {
 });
 
 /* ============================================================
- *  POST /api/admin/sync-users — backfill verified Firebase users into MongoDB
+ *  POST /api/admin/sync-users — full sync with report
  * ============================================================ */
 router.post("/sync-users", async (req: Request, res: Response) => {
   try {
@@ -256,14 +256,12 @@ router.post("/sync-users", async (req: Request, res: Response) => {
         if (!fbUser.emailVerified) continue;
         totalVerified++;
 
-        // Skip if already in MongoDB
         const exists = await User.findOne({ firebaseUid: fbUser.uid }).lean();
         if (exists) {
           skipped.push(fbUser.email || fbUser.uid);
           continue;
         }
 
-        // Use Firebase displayName, fallback to email prefix, fallback to "User"
         const displayName =
           fbUser.displayName && fbUser.displayName.trim()
             ? fbUser.displayName.trim()
@@ -289,7 +287,6 @@ router.post("/sync-users", async (req: Request, res: Response) => {
           });
           created.push(fbUser.email || fbUser.uid);
         } catch (e: any) {
-          // Handle duplicate key errors gracefully
           if (e?.code === 11000) {
             skipped.push(fbUser.email || fbUser.uid);
           } else {
@@ -322,6 +319,77 @@ router.post("/sync-users", async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error("Sync users error:", err);
     return res.status(500).json({ success: false, message: "Sync failed: " + (err?.message || err) });
+  }
+});
+
+/* ============================================================
+ *  POST /api/admin/sync-users-silent — auto-sync (no report)
+ * ============================================================ */
+router.post("/sync-users-silent", async (req: Request, res: Response) => {
+  try {
+    let created = 0;
+    let skipped = 0;
+    let totalVerified = 0;
+
+    let nextPageToken: string | undefined;
+    do {
+      const listResult = await admin.auth().listUsers(1000, nextPageToken);
+      for (const fbUser of listResult.users) {
+        if (!fbUser.emailVerified) continue;
+        totalVerified++;
+
+        const exists = await User.findOne({ firebaseUid: fbUser.uid }).select("_id").lean();
+        if (exists) { skipped++; continue; }
+
+        const displayName =
+          fbUser.displayName && fbUser.displayName.trim()
+            ? fbUser.displayName.trim()
+            : (fbUser.email ? fbUser.email.split("@")[0] : "User");
+
+        try {
+          await User.create({
+            name: displayName,
+            email: (fbUser.email || "").toLowerCase().trim(),
+            country: "Not set",
+            firebaseUid: fbUser.uid,
+            balance: 0,
+            wallets: { usdt: 0, btc: 0, eth: 0, ngn: 0 },
+            deposits: [],
+            withdrawals: [],
+            converts: [],
+            trades: [],
+            tradeBots: [],
+            loginHistory: [],
+            lastLogin: null,
+            totalProfit: 0,
+            status: "active",
+          });
+          created++;
+        } catch (e: any) {
+          if (e?.code !== 11000) {
+            console.error("Silent sync create failed:", e);
+          }
+        }
+      }
+      nextPageToken = listResult.pageToken;
+    } while (nextPageToken);
+
+    if (created > 0) {
+      await writeLog(req, "SYNC_VERIFIED_USERS", "system", {
+        metadata: { totalVerified, created, skipped, silent: true },
+        reason: `Auto-synced ${created} new user(s)`,
+      });
+    }
+
+    return res.json({
+      success: true,
+      totalVerified,
+      created,
+      skipped,
+    });
+  } catch (err: any) {
+    console.error("Silent sync error:", err);
+    return res.status(500).json({ success: false, message: "Sync failed" });
   }
 });
 
@@ -436,7 +504,7 @@ router.get("/users/export", async (_req: Request, res: Response) => {
 });
 
 /* ============================================================
- *  GET /api/admin/users/:uid — full user detail
+ *  GET /api/admin/users/:uid
  * ============================================================ */
 router.get("/users/:uid", async (req: Request, res: Response) => {
   try {
