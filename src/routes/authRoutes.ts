@@ -8,7 +8,7 @@ const router = Router();
 
 /* ============================================================
  *  BOT ACCESS TOKEN STORE
- *  Tokens expire after 20 minutes. Stored in memory (resets on redeploy).
+ *  Tokens expire after 24 hours. Stored in memory (resets on redeploy).
  * ============================================================ */
 const botAccessTokens = new Map<string, { firebaseUid: string; expiresAt: number }>();
 const BOT_TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
