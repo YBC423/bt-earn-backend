@@ -1,6 +1,5 @@
 import { Router, Request, Response } from "express";
 import User from "../models/User";
-import admin from "firebase-admin";
 import { requireJarvisKey } from "../middlewares/jarvisMiddleware";
 import { requireJarvisWrite } from "../middlewares/jarvisWriteMiddleware";
 
@@ -8,34 +7,11 @@ const router = Router();
 router.use(requireJarvisKey);
 
 /* ============================================================
- *  Helper — only verified users
- * ============================================================ */
-async function getVerifiedUids(uids: string[]): Promise<Set<string>> {
-  const verified = new Set<string>();
-  const chunks: string[][] = [];
-  for (let i = 0; i < uids.length; i += 100) chunks.push(uids.slice(i, i + 100));
-  for (const chunk of chunks) {
-    try {
-      const result = await admin.auth().getUsers(chunk.map((uid) => ({ uid })));
-      for (const u of result.users) if (u.emailVerified) verified.add(u.uid);
-    } catch (e) {
-      console.error("getUsers batch failed:", e);
-    }
-  }
-  return verified;
-}
-
-/* ============================================================
  *  GET /api/jarvis/summary
  * ============================================================ */
 router.get("/summary", async (_req: Request, res: Response) => {
   try {
-    const allUsers = await User.find({}).select("firebaseUid").lean();
-    const uids = allUsers.map((u: any) => u.firebaseUid).filter(Boolean);
-    const verifiedSet = await getVerifiedUids(uids);
-    const verifiedUids = Array.from(verifiedSet);
-
-    const users = await User.find({ firebaseUid: { $in: verifiedUids } })
+    const users = await User.find({})
       .select("wallets balance status totalProfit")
       .lean();
 
@@ -49,7 +25,6 @@ router.get("/summary", async (_req: Request, res: Response) => {
     }
 
     const pendingDep = await User.aggregate([
-      { $match: { firebaseUid: { $in: verifiedUids } } },
       { $unwind: "$deposits" },
       { $match: { "deposits.status": "Pending" } },
       {
@@ -62,7 +37,6 @@ router.get("/summary", async (_req: Request, res: Response) => {
     ]);
 
     const pendingWd = await User.aggregate([
-      { $match: { firebaseUid: { $in: verifiedUids } } },
       { $unwind: "$withdrawals" },
       { $match: { "withdrawals.status": "Pending" } },
       {
@@ -77,9 +51,9 @@ router.get("/summary", async (_req: Request, res: Response) => {
     return res.json({
       success: true,
       summary: {
-        totalUsers: verifiedUids.length,
+        totalUsers: (users as any[]).length,
         bannedUsers: banned,
-        activeUsers: verifiedUids.length - banned,
+        activeUsers: (users as any[]).length - banned,
         totalUsdt,
         totalProfit,
         pendingDeposits: {
@@ -125,10 +99,7 @@ router.get("/deposits", async (req: Request, res: Response) => {
     if (status !== "all") pipeline.push({ $match: { status } });
     pipeline.push({ $sort: { id: -1 } }, { $limit: limit });
 
-    const raw = await User.aggregate(pipeline);
-    const uids = Array.from(new Set(raw.map((r: any) => r.firebaseUid).filter(Boolean)));
-    const verifiedSet = await getVerifiedUids(uids);
-    const deposits = raw.filter((r: any) => verifiedSet.has(r.firebaseUid));
+    const deposits = await User.aggregate(pipeline);
 
     return res.json({ success: true, count: deposits.length, deposits });
   } catch (err: any) {
@@ -165,10 +136,7 @@ router.get("/withdrawals", async (req: Request, res: Response) => {
     if (status !== "all") pipeline.push({ $match: { status } });
     pipeline.push({ $sort: { id: -1 } }, { $limit: limit });
 
-    const raw = await User.aggregate(pipeline);
-    const uids = Array.from(new Set(raw.map((r: any) => r.firebaseUid).filter(Boolean)));
-    const verifiedSet = await getVerifiedUids(uids);
-    const withdrawals = raw.filter((r: any) => verifiedSet.has(r.firebaseUid));
+    const withdrawals = await User.aggregate(pipeline);
 
     return res.json({ success: true, count: withdrawals.length, withdrawals });
   } catch (err: any) {
@@ -184,17 +152,11 @@ router.get("/users", async (req: Request, res: Response) => {
   try {
     const limit = Math.min(100, parseInt(req.query.limit as string) || 20);
 
-    const all = await User.find({})
+    const users = await User.find({})
       .sort({ createdAt: -1 })
-      .limit(limit * 2)
+      .limit(limit)
       .select("name email country status createdAt firebaseUid wallets.usdt")
       .lean();
-
-    const uids = all.map((u: any) => u.firebaseUid).filter(Boolean);
-    const verifiedSet = await getVerifiedUids(uids);
-    const users = all
-      .filter((u: any) => verifiedSet.has(u.firebaseUid))
-      .slice(0, limit);
 
     return res.json({ success: true, count: users.length, users });
   } catch (err: any) {
@@ -245,10 +207,7 @@ router.get("/bots", async (req: Request, res: Response) => {
       { $limit: limit },
     ];
 
-    const raw = await User.aggregate(pipeline);
-    const uids = Array.from(new Set(raw.map((r: any) => r.firebaseUid).filter(Boolean)));
-    const verifiedSet = await getVerifiedUids(uids);
-    const trades = raw.filter((r: any) => verifiedSet.has(r.firebaseUid));
+    const trades = await User.aggregate(pipeline);
 
     return res.json({ success: true, count: trades.length, trades });
   } catch (err: any) {
@@ -273,7 +232,7 @@ router.get("/logs", async (req: Request, res: Response) => {
 });
 
 /* ============================================================
- *  WRITE ROUTES — approve / reject (require JARVIS_ALLOW_WRITE)
+ *  WRITE ROUTES — approve / reject
  * ============================================================ */
 
 router.post(
