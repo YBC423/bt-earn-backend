@@ -8,6 +8,7 @@ import path from "path";
 import fs from "fs";
 import authRoutes from "./routes/authRoutes";
 import adminRoutes from "./routes/adminRoutes";
+import jarvisRoutes from "./routes/jarvisRoutes";
 
 dotenv.config();
 
@@ -134,6 +135,7 @@ app.use("/api/auth/bot-trade", tradeLimiter);
  * ============================================================ */
 app.use("/api/auth", authRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/jarvis", jarvisRoutes);
 
 /* ============================================================
  *  Health checks
