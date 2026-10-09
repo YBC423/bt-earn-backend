@@ -8,10 +8,9 @@ const router = Router();
 
 /* ============================================================
  *  BOT ACCESS TOKEN STORE
- *  Tokens expire after 24 hours. Stored in memory (resets on redeploy).
  * ============================================================ */
 const botAccessTokens = new Map<string, { firebaseUid: string; expiresAt: number }>();
-const BOT_TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const BOT_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 
 function createBotAccessToken(firebaseUid: string): string {
   const token = crypto.randomBytes(32).toString("hex");
@@ -34,7 +33,6 @@ function isValidBotAccessToken(token: string, firebaseUid: string): boolean {
   return true;
 }
 
-// Cleanup expired tokens every 5 minutes
 setInterval(() => {
   const now = Date.now();
   for (const [token, entry] of botAccessTokens.entries()) {
@@ -43,7 +41,7 @@ setInterval(() => {
 }, 5 * 60 * 1000);
 
 /* ============================================================
- *  BOT PROFIT CALCULATION (server-side, trusted)
+ *  BOT PROFIT CALCULATION
  * ============================================================ */
 function calculateProfitLowRisk(amount: number) {
   const isWin = Math.random() * 100 <= 60;
@@ -331,8 +329,7 @@ router.post("/withdraw", verifyFirebaseToken, async (req: Request, res: Response
 });
 
 /* ============================================================
- *  CONVERT — swap one coin to another using live Yahoo price
- *  Fee: $0.05 flat. Min: $1.
+ *  CONVERT
  * ============================================================ */
 router.post("/convert", verifyFirebaseToken, async (req: Request, res: Response) => {
   try {
@@ -447,8 +444,7 @@ router.post("/convert", verifyFirebaseToken, async (req: Request, res: Response)
 });
 
 /* ============================================================
- *  BOT RUN — Server-side simulated profit
- *  Locked behind bot access token (20 min TTL)
+ *  BOT RUN
  * ============================================================ */
 router.post("/bot-run", verifyFirebaseToken, async (req: Request, res: Response) => {
   try {
@@ -530,8 +526,6 @@ router.post("/bot-run", verifyFirebaseToken, async (req: Request, res: Response)
 
 /* ============================================================
  *  BOT ACCESS CODE VERIFICATION
- *  Returns a token valid for 20 minutes. Code stored in
- *  BOT_ACCESS_CODE env var on Render.
  * ============================================================ */
 router.post("/verify-bot-access", verifyFirebaseToken, async (req: Request, res: Response) => {
   try {
@@ -561,11 +555,11 @@ router.post("/verify-bot-access", verifyFirebaseToken, async (req: Request, res:
 });
 
 /* ============================================================
- *  PUBLIC MARKET DATA — charts + order book + batch prices
+ *  PUBLIC MARKET DATA
  * ============================================================ */
 
 const chartCache: Record<string, { data: any; time: number }> = {};
-const CACHE_TTL = 30000;
+const CACHE_TTL = 60000;   // UPDATED: 30s → 60s
 
 router.get("/chart/:symbol", async (req: Request, res: Response) => {
   try {
@@ -724,11 +718,10 @@ router.get("/orderbook/:symbol", async (req: Request, res: Response) => {
 });
 
 /* ============================================================
- *  BATCH PRICES — one call for many coins (via Yahoo)
- *  With 10-second cache
+ *  BATCH PRICES — with 60s cache + concurrency limit
  * ============================================================ */
 const priceCache: { data: Record<string, any>; time: number } = { data: {}, time: 0 };
-const PRICE_CACHE_TTL = 10000;
+const PRICE_CACHE_TTL = 60000;   // UPDATED: 10s → 60s
 
 router.get("/prices", async (req: Request, res: Response) => {
   try {
@@ -774,7 +767,13 @@ router.get("/prices", async (req: Request, res: Response) => {
       }
     });
 
-    await Promise.all(fetchPromises);
+    // UPDATED: process in batches of 5 with small delay
+    const BATCH = 5;
+    for (let i = 0; i < fetchPromises.length; i += BATCH) {
+      const slice = fetchPromises.slice(i, i + BATCH);
+      await Promise.all(slice);
+      await new Promise(r => setTimeout(r, 200));
+    }
 
     priceCache.data = { ...priceCache.data, ...priceData };
     priceCache.time = Date.now();
